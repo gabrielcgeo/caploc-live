@@ -2,6 +2,7 @@ import {createServer} from 'node:http';
 import {randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual, scryptSync} from 'node:crypto';
 import {readFile, writeFile, rename, mkdir, unlink, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
+import QRCode from 'qrcode';
 
 const port=Number(process.env.PORT||8080);
 const dataDir=process.env.DATA_DIR||'/data';
@@ -76,8 +77,22 @@ async function save(record) {
 function bearer(request) { const value=request.headers.authorization||''; return value.startsWith('Bearer ')?value.slice(7):''; }
 const token=()=>randomBytes(32).toString('base64url');
 const monitorSessions=new Map(),monitorAttempts=new Map();
-const enrollCodes=new Map();
 const monitorCookie='caploc_monitor';
+function enrollmentPath(code) {
+  if(!/^[A-Za-z0-9_-]{24}$/.test(code))return null;
+  return join(dataDir,'enroll-'+tokenHash(code).toString('hex')+'.json');
+}
+async function saveEnrollmentCode(code,expiresAt) {
+  await writeFile(enrollmentPath(code),seal({expiresAt}),{mode:0o600,flag:'wx'});
+}
+async function enrollmentExpiry(code) {
+  const path=enrollmentPath(code);if(!path)return 0;
+  try {
+    const expiresAt=unseal(await readFile(path,'utf8')).expiresAt;
+    if(expiresAt>Date.now())return expiresAt;
+    await unlink(path);return 0;
+  } catch(error) {if(error.code==='ENOENT')return 0;throw error;}
+}
 function monitorAuthenticated(request) {
   const cookie=(request.headers.cookie||'').split(';').map(v=>v.trim())
     .find(v=>v.startsWith(monitorCookie+'='));
@@ -250,16 +265,18 @@ const server=createServer(async(request,response)=>{
     if(request.method==='POST'&&url.pathname==='/api/monitor/enroll-codes') {
       if(!monitorAuthenticated(request)) return send(response,401,{error:'unauthorized'});
       const code=randomBytes(18).toString('base64url');
-      enrollCodes.set(code,Date.now()+15*60000);
-      return send(response,201,{code,expiresAt:Date.now()+15*60000});
+      const expiresAt=Date.now()+2*60*60*1000;
+      await saveEnrollmentCode(code,expiresAt);
+      const qr=await QRCode.toDataURL('caploc://fleet/enroll?code='+code,
+        {errorCorrectionLevel:'M',margin:2,width:320});
+      return send(response,201,{code,expiresAt,qr});
     }
     if(request.method==='POST'&&url.pathname==='/api/fleet/enroll') {
       const input=await body(request),code=String(input.code||'').trim();
-      const expires=enrollCodes.get(code);
+      const expires=await enrollmentExpiry(code);
       if(!expires||expires<Date.now()) return send(response,401,{error:'invalid_code'});
       const name=String(input.name||'').trim().slice(0,80);
       if(name.length<2) return send(response,400,{error:'invalid_name'});
-      enrollCodes.delete(code);
       const id=token(),deviceToken=token();
       await saveFleet({id,name,tokenHash:tokenHash(deviceToken).toString('hex'),
         enrolledAt:Date.now(),active:true,position:null,points:[]});

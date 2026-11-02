@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {scryptSync} from 'node:crypto';
+import {scryptSync,createHash} from 'node:crypto';
 
 test('private live session, upload and public viewer',async()=>{
   const data=await mkdtemp(join(tmpdir(),'caploc-live-'));
@@ -82,20 +82,30 @@ test('private live session, upload and public viewer',async()=>{
     assert.equal((await initial.json()).length,0,'anonymous sessions do not enter central');
     const codeResponse=await fetch(base+'/api/monitor/enroll-codes',{method:'POST',headers:authorized});
     assert.equal(codeResponse.status,201);
-    const code=(await codeResponse.json()).code;
+    const enrollment=await codeResponse.json(),code=enrollment.code;
+    assert.ok(enrollment.expiresAt-Date.now()>119*60*1000,'QR stays valid for two hours');
+    const codeFile=join(data,'enroll-'+createHash('sha256').update(code).digest('hex')+'.json');
+    const encryptedCode=await disk(codeFile,'utf8');
+    assert.ok(!encryptedCode.includes(code),'persistent QR record does not expose enrollment code');
+    assert.match(enrollment.qr,/^data:image\/png;base64,/);
+    assert.ok(Buffer.from(enrollment.qr.split(',')[1],'base64').subarray(0,8)
+      .equals(Buffer.from([137,80,78,71,13,10,26,10])),'QR is a PNG generated on the server');
     const enrolled=await fetch(base+'/api/fleet/enroll',{method:'POST',body:JSON.stringify({
       code,name:'Equipe de teste'})});
     assert.equal(enrolled.status,201);
     const device=await enrolled.json();
-    assert.equal((await fetch(base+'/api/fleet/enroll',{method:'POST',body:JSON.stringify({
-      code,name:'Outro aparelho'})})).status,401,'enrollment code is single use');
+    const another=await fetch(base+'/api/fleet/enroll',{method:'POST',body:JSON.stringify({
+      code,name:'Outro aparelho'})});
+    assert.equal(another.status,201,'QR enrollment code supports multiple devices');
+    const secondDevice=await another.json();
+    assert.notEqual(secondDevice.deviceToken,device.deviceToken,'each device gets a separate credential');
     const point=await fetch(base+'/api/fleet/'+device.id+'/position',{method:'PUT',
       headers:{Authorization:'Bearer '+device.deviceToken},body:JSON.stringify({lat:-19.9,lon:-43.9,accuracy:4})});
     assert.equal(point.status,200);
     const fleet=await fetch(base+'/api/monitor/sessions',{headers:authorized});
     const fleetItems=await fleet.json();
-    assert.equal(fleetItems.length,1);
-    assert.equal(fleetItems[0].name,'Equipe de teste');
+    assert.equal(fleetItems.length,2);
+    assert.ok(fleetItems.some(item=>item.name==='Equipe de teste'));
     const incident=await fetch(base+'/api/fleet/'+device.id+'/incidents',{method:'POST',
       headers:{Authorization:'Bearer '+device.deviceToken},body:JSON.stringify({
         message:'Acidente de teste',mime:'image/png',media:Buffer.from('fake png').toString('base64'),

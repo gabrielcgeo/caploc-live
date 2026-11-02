@@ -21,6 +21,7 @@
     .badge.stale{background:#fff0d9;color:#8b4b00}.badge.ended{background:#e7e9ed;color:#4c5868}
     #detail{margin-top:16px;padding-top:12px;border-top:1px solid #d2deea;line-height:1.6;overflow-wrap:anywhere}
     #error{color:#a82732;min-height:1.4em}.muted{color:#5c7188}#logout{background:#315576}
+    #qrBox{margin:12px 0;padding:12px;background:#f0f5fa;border-radius:12px;text-align:center}#qrImage{display:block;width:min(100%,260px);height:auto;margin:4px auto;border-radius:8px}#qrBox small{display:block;overflow-wrap:anywhere}
     @media(max-width:750px){#workspace{display:flex;flex-direction:column;height:auto}aside{max-height:44vh}#map{height:56vh;min-height:320px}}
   </style>
 </head>
@@ -40,6 +41,7 @@
       <div class="summary"><strong id="activeCount">0</strong> dispositivos ou links ativos<br><span id="updated" class="muted"></span></div>
       <button id="newCode">Vincular aparelho da empresa</button>
       <p id="codeBox" class="muted" aria-live="polite"></p>
+      <div id="qrBox" hidden><img id="qrImage" alt="QR code temporário para vincular aparelhos ao CapLoc"><small>Abra Explorer → Compartilhar → Ler QR da central em cada CapLoc. O mesmo QR vincula vários aparelhos durante 2 horas; cada um recebe sua identificação e chave próprias.</small></div>
       <div id="list" aria-label="Clientes compartilhando localização"></div>
       <div id="detail"><span class="muted">Selecione uma pessoa ou projeto para ver a posição e a trilha.</span></div>
       <h2>Ocorrências recebidas</h2><div id="incidents" aria-live="polite"></div>
@@ -154,7 +156,8 @@
       const response=await fetch('/api/monitor/enroll-codes',{method:'POST'});
       if(!response.ok){$('codeBox').textContent='Não foi possível criar o código.';return}
       const data=await response.json();
-      $('codeBox').textContent='Código de uso único: '+data.code+' · válido por 15 minutos. Digite no CapLoc do aparelho.';
+      $('codeBox').textContent='Código de cadastro: '+data.code+' · válido até '+new Date(data.expiresAt).toLocaleString('pt-BR')+' para vários aparelhos. Você também pode digitá-lo no CapLoc.';
+      $('qrImage').src=data.qr;$('qrBox').hidden=false;
     };
     fetch('/api/monitor/sessions').then(r=>{if(r.ok)showWorkspace()}).catch(()=>{});
   </script>
