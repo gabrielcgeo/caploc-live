@@ -51,6 +51,7 @@ test('private live session, upload and public viewer',async()=>{
     assert.match(viewerHtml,/CapLoc · localização compartilhada/);
     assert.match(viewerHtml,/última posição conhecida/);
     assert.match(viewerHtml,/mt1\.google\.com\/vt\/lyrs=s/);
+    assert.equal(viewerHtml.includes('__SESSION_ID__'),false);
     const ended=await fetch(base+'/api/sessions/'+session.id,{method:'DELETE',
       headers:{Authorization:'Bearer '+session.uploadToken},
       body:JSON.stringify({reason:'Situação controlada'})});

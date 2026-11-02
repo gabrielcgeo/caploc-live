@@ -104,7 +104,7 @@ async function weatherFor(point) {
   return value;
 }
 const viewerTemplate=await readFile(new URL('./viewer.html',import.meta.url),'utf8');
-function viewer(id) { return viewerTemplate.replace('__SESSION_ID__',id); }
+function viewer(id) { return viewerTemplate.replaceAll('__SESSION_ID__',id); }
 const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
