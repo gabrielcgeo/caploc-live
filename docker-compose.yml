@@ -1,0 +1,22 @@
+services:
+  explorer-live:
+    build: .
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      PUBLIC_BASE_URL: https://caploc.safeclim.com
+      EXPLORER_ADMIN_TOKEN: ${EXPLORER_ADMIN_TOKEN:?Configure a chave no Dokploy}
+    volumes:
+      - caploc_explorer_data:/data
+    expose:
+      - "8080"
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+
+volumes:
+  caploc_explorer_data:
+
+networks:
+  dokploy-network:
+    external: true
