@@ -83,7 +83,7 @@
           $('status').className='ended';$('status').textContent='SOS ou compartilhamento encerrado manualmente';
           $('end').textContent='Motivo: '+(data.endReason||'Não informado')+
             (data.endedAt?' · '+new Date(data.endedAt).toLocaleString('pt-BR'):'');
-        }else if(age>45){
+        }else if(age>90){
           $('status').className='stale';
           $('status').textContent='Sem atualização há '+(age<120?age+' segundos':Math.floor(age/60)+' minutos')+' · última posição conhecida';
         }else{
@@ -98,7 +98,7 @@
         refreshWeather(point);
       }catch(error){$('status').className='stale';$('status').textContent=error.message}
     }
-    refresh();setInterval(refresh,15000);
+    refresh();setInterval(refresh,60000);
   </script>
 </body>
 </html>
