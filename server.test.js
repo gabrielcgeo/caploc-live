@@ -20,6 +20,7 @@ test('private live session, upload and public viewer',async()=>{
       await new Promise(resolve=>setTimeout(resolve,100));
     }
     assert.ok(ready,'server started');
+    assert.equal((await fetch(base+'/api/nearby-care')).status,400);
     const unauthorized=await fetch(base+'/api/sessions',{method:'POST',body:'{}'});
     assert.equal(unauthorized.status,401);
     const automatic=await fetch(base+'/api/public-sessions',{method:'POST',

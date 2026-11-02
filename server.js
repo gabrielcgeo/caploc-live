@@ -69,6 +69,43 @@ const token=()=>randomBytes(32).toString('base64url');
 const publicCreates=new Map();
 let globalCreates=[];
 const weatherCache=new Map();
+const careCache=new Map(),careInFlight=new Map();
+let careQueue=Promise.resolve(),lastCareAt=0,careRequests=[];
+async function nearbyCare(latitude,longitude) {
+  // Coarse cell prevents transmitting a user's exact GPS position upstream.
+  const lat=Math.round(latitude*50)/50,lon=Math.round(longitude*50)/50;
+  const key=lat.toFixed(2)+','+lon.toFixed(2),now=Date.now();
+  const cached=careCache.get(key);
+  if(cached&&cached.expires>now) return cached.value;
+  if(careInFlight.has(key)) return careInFlight.get(key);
+  careRequests=careRequests.filter(at=>at>now-3600000);
+  if(careRequests.length>=60) throw new Error('care_rate_limited');
+  careRequests.push(now);
+  const job=(async()=>{
+    const previous=careQueue;
+    let release;
+    careQueue=new Promise(resolve=>{release=resolve});
+    await previous;
+    try {
+      const pause=Math.max(0,1100-(Date.now()-lastCareAt));
+      if(pause) await new Promise(resolve=>setTimeout(resolve,pause));
+      lastCareAt=Date.now();
+      const box=[lon-0.27,lat+0.27,lon+0.27,lat-0.27].map(v=>v.toFixed(6)).join(',');
+      const url='https://nominatim.openstreetmap.org/search?format=jsonv2&q=hospital'+
+        '&limit=40&bounded=1&addressdetails=1&viewbox='+encodeURIComponent(box);
+      const response=await fetch(url,{headers:{'User-Agent':'CapLoc/0.37 (+https://caploc.safeclim.com)',
+        'Accept-Language':'pt-BR,pt;q=0.9'},signal:AbortSignal.timeout(15000)});
+      if(!response.ok) throw new Error('care_upstream_unavailable');
+      const value=await response.json();
+      if(!Array.isArray(value)) throw new Error('care_upstream_invalid');
+      careCache.set(key,{value,expires:Date.now()+900000});
+      if(careCache.size>300) careCache.delete(careCache.keys().next().value);
+      return value;
+    } finally {release()}
+  })();
+  careInFlight.set(key,job);
+  try {return await job} finally {careInFlight.delete(key)}
+}
 function mayCreate(request) {
   const now=Date.now(),hourAgo=now-3600000;
   globalCreates=globalCreates.filter(at=>at>hourAgo);
@@ -109,6 +146,15 @@ const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
     if(request.method==='GET'&&url.pathname==='/health') return send(response,200,{ok:true});
+    if(request.method==='GET'&&url.pathname==='/api/nearby-care') {
+      const lat=Number(url.searchParams.get('lat')),lon=Number(url.searchParams.get('lon'));
+      if(!url.searchParams.has('lat')||!url.searchParams.has('lon')||
+         !Number.isFinite(lat)||!Number.isFinite(lon)||lat< -90||lat>90||lon< -180||lon>180)
+        return send(response,400,{error:'invalid_position'});
+      try {return send(response,200,await nearbyCare(lat,lon));}
+      catch(error) {return send(response,error.message==='care_rate_limited'?429:503,
+        {error:'care_unavailable'});}
+    }
     if(request.method==='POST'&&(url.pathname==='/api/sessions'||url.pathname==='/api/public-sessions')) {
       const anonymous=url.pathname==='/api/public-sessions';
       if(!anonymous&&!equalHash(bearer(request),tokenHash(adminToken).toString('hex')))
