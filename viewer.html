@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CapLoc · localização compartilhada</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html,body,#map{height:100%;margin:0;font:15px system-ui,sans-serif}
+    #panel{position:absolute;z-index:1000;top:12px;left:12px;right:12px;max-width:420px;
+      padding:15px;border-radius:16px;background:#fff;color:#15233a;box-shadow:0 3px 20px #0006}
+    h1{font-size:18px;margin:0 0 7px}p{margin:5px 0}small{color:#53657a}
+    #status{font-weight:700}.fresh{color:#147346}.stale{color:#aa4e10}.ended{color:#a92332}
+    .legend{margin-top:9px;border-top:1px solid #d9e2ee;padding-top:9px;font-size:13px}
+    .dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:#e33b44;border:2px solid white;box-shadow:0 0 0 1px #555}
+    .line{display:inline-block;width:22px;border-top:4px solid #ffd324;vertical-align:middle}
+  </style>
+</head>
+<body>
+  <div id="map" aria-label="Mapa da localização compartilhada"></div>
+  <section id="panel" aria-live="polite">
+    <h1 id="name">CapLoc · compartilhamento</h1>
+    <p id="status">Carregando localização…</p>
+    <p id="last"></p>
+    <p id="accuracy"></p>
+    <p id="end"></p>
+    <div class="legend"><span class="dot"></span> Última posição recebida &nbsp; <span class="line"></span> Trilha percorrida<br>
+      <small>Imagem de satélite © Google · posição e horário enviados pelo telefone</small></div>
+  </section>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map=L.map('map').setView([-19.92,-43.94],14);
+    const satellite=L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      {attribution:'Imagem de satélite © Google',maxZoom:21}).addTo(map);
+    const streets=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {attribution:'© OpenStreetMap contributors',maxZoom:19});
+    L.control.layers({'Satélite':satellite,'Ruas':streets}).addTo(map);
+    let marker,circle,trail,first=true;
+    const $=id=>document.getElementById(id);
+    async function refresh(){
+      try{
+        const response=await fetch('/api/public/__SESSION_ID__',{cache:'no-store'});
+        if(response.status===204){$('status').textContent='Aguardando a primeira posição do telefone.';return}
+        if(!response.ok)throw Error(response.status===404?'Link expirado':'Localização indisponível');
+        const data=await response.json(),point=data.position,coords=[point.lat,point.lon];
+        $('name').textContent=data.name;
+        if(!marker){
+          marker=L.circleMarker(coords,{radius:9,color:'#fff',weight:3,fillColor:'#e33b44',fillOpacity:1}).addTo(map);
+          circle=L.circle(coords,{radius:point.accuracy||0,color:'#36a7f7',fillOpacity:0.1}).addTo(map);
+          trail=L.polyline([],{color:'#ffd324',weight:5,opacity:0.95}).addTo(map);
+        }else{marker.setLatLng(coords);circle.setLatLng(coords).setRadius(point.accuracy||0)}
+        trail.setLatLngs(data.points.map(p=>[p.lat,p.lon]));
+        if(first){map.setView(coords,17);first=false}
+        const age=Math.max(0,Math.floor((Date.now()-point.at)/1000));
+        if(!data.active){
+          $('status').className='ended';$('status').textContent='SOS ou compartilhamento encerrado manualmente';
+          $('end').textContent='Motivo: '+(data.endReason||'Não informado')+
+            (data.endedAt?' · '+new Date(data.endedAt).toLocaleString('pt-BR'):'');
+        }else if(age>45){
+          $('status').className='stale';
+          $('status').textContent='Sem atualização há '+(age<120?age+' segundos':Math.floor(age/60)+' minutos')+' · última posição conhecida';
+        }else{
+          $('status').className='fresh';$('status').textContent='Localização atualizada há '+age+' segundos';
+        }
+        $('last').textContent='Último envio: '+new Date(point.at).toLocaleString('pt-BR')+
+          ' · '+point.lat.toFixed(7)+', '+point.lon.toFixed(7);
+        $('accuracy').textContent='Precisão GPS estimada: ±'+Math.round(point.accuracy||0)+' m';
+      }catch(error){$('status').className='stale';$('status').textContent=error.message}
+    }
+    refresh();setInterval(refresh,15000);
+  </script>
+</body>
+</html>
