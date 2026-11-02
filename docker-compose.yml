@@ -6,8 +6,8 @@ services:
       DATA_DIR: /data
       PUBLIC_BASE_URL: https://caploc.safeclim.com
       EXPLORER_ADMIN_TOKEN: ${EXPLORER_ADMIN_TOKEN:?Configure a chave no Dokploy}
-      MONITOR_ADMIN_EMAIL: ${MONITOR_ADMIN_EMAIL:?Configure o e-mail da central no Dokploy}
-      MONITOR_ADMIN_PASSWORD_SCRYPT: ${MONITOR_ADMIN_PASSWORD_SCRYPT:?Configure o hash da senha da central no Dokploy}
+      MONITOR_ADMIN_EMAIL: profgabrielcaldeira@gmail.com
+      MONITOR_ADMIN_PASSWORD_SCRYPT: 687c72bbc1bd1f6d3bb42d9ce2beabad:52809f8f7924ebd995dd51715c469d89b41c6e9423220c1871fbcba053fc98e0
     volumes:
       - caploc_explorer_data:/data
     expose:

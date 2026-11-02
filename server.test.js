@@ -15,7 +15,7 @@ test('private live session, upload and public viewer',async()=>{
     cwd:import.meta.dirname,env:{...process.env,DATA_DIR:data,PORT:String(port),
       PUBLIC_BASE_URL:'https://explorer.example.test',EXPLORER_ADMIN_TOKEN:admin,
       MONITOR_ADMIN_EMAIL:'admin@example.test',
-      MONITOR_ADMIN_PASSWORD_SCRYPT:salt+':'+scryptSync(monitorPassword,salt,32).toString('hex')},stdio:'ignore'});
+      MONITOR_ADMIN_PASSWORD_SCRYPT:salt+':'+scryptSync(monitorPassword+':'+admin,salt,32).toString('hex')},stdio:'ignore'});
   const base=`http://127.0.0.1:${port}`;
   try {
     let ready=false;

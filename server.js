@@ -90,7 +90,7 @@ function validMonitorPassword(password) {
   if(parts.length!==2||!parts[0]||!parts[1]) return false;
   const expected=Buffer.from(parts[1],'hex');
   if(expected.length!==32) return false;
-  const actual=scryptSync(password,parts[0],32);
+  const actual=scryptSync(password+':'+adminToken,parts[0],32);
   return timingSafeEqual(actual,expected);
 }
 function loginAllowed(request) {
