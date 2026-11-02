@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CapLoc · Central de Monitoramento Integrada</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    *{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:15px system-ui,sans-serif;color:#172b46;background:#eef3f9}
+    header{display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:#102d50;color:white}
+    header h1{font-size:18px;margin:0}button{border:0;border-radius:10px;padding:10px 14px;background:#1264b3;color:white;font:inherit;cursor:pointer}
+    button:hover{background:#0a4c8e}button:disabled{opacity:.5;cursor:default}
+    #login{max-width:400px;margin:9vh auto;padding:24px;background:white;border-radius:18px;box-shadow:0 6px 28px #102d5022}
+    #login h2{margin-top:0}label{display:block;margin:14px 0 5px;font-weight:650}input{display:block;width:100%;padding:12px;border:1px solid #b7c5d5;border-radius:9px;font:inherit}
+    #workspace{display:grid;grid-template-columns:minmax(280px,360px) 1fr;height:calc(100vh - 54px)}
+    aside{overflow:auto;background:white;border-right:1px solid #d2deea;padding:14px}#map{height:100%;min-height:400px}
+    .summary{padding:12px;border-radius:12px;background:#e8f2fc;margin-bottom:12px}.summary strong{font-size:23px}
+    .item{display:block;width:100%;text-align:left;margin:8px 0;background:#f0f5fa;color:#172b46}
+    .item:hover,.item.selected{background:#cce3fb}.item small{display:block;color:#526b85;margin-top:4px}
+    .badge{display:inline-block;border-radius:9px;padding:3px 7px;background:#e5f0ea;color:#176239;font-size:12px;font-weight:700}
+    .badge.stale{background:#fff0d9;color:#8b4b00}.badge.ended{background:#e7e9ed;color:#4c5868}
+    #detail{margin-top:16px;padding-top:12px;border-top:1px solid #d2deea;line-height:1.6;overflow-wrap:anywhere}
+    #error{color:#a82732;min-height:1.4em}.muted{color:#5c7188}#logout{background:#315576}
+    @media(max-width:750px){#workspace{display:flex;flex-direction:column;height:auto}aside{max-height:44vh}#map{height:56vh;min-height:320px}}
+  </style>
+</head>
+<body>
+  <header><h1>CapLoc · Central de Monitoramento Integrada</h1><button id="logout" hidden>Sair</button></header>
+  <section id="login">
+    <h2>Acesso administrativo</h2>
+    <p class="muted">Sessões compartilhadas voluntariamente pelos usuários do CapLoc.</p>
+    <form id="form">
+      <label for="email">E-mail</label><input id="email" type="email" autocomplete="username" required>
+      <label for="password">Senha</label><input id="password" type="password" autocomplete="current-password" required>
+      <p id="error" role="alert"></p><button type="submit">Entrar</button>
+    </form>
+  </section>
+  <main id="workspace" hidden>
+    <aside>
+      <div class="summary"><strong id="activeCount">0</strong> dispositivos ou links ativos<br><span id="updated" class="muted"></span></div>
+      <button id="newCode">Vincular aparelho da empresa</button>
+      <p id="codeBox" class="muted" aria-live="polite"></p>
+      <div id="list" aria-label="Clientes compartilhando localização"></div>
+      <div id="detail"><span class="muted">Selecione uma pessoa ou projeto para ver a posição e a trilha.</span></div>
+      <h2>Ocorrências recebidas</h2><div id="incidents" aria-live="polite"></div>
+    </aside>
+    <div id="map" aria-label="Mapa das posições compartilhadas"></div>
+  </main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const $=id=>document.getElementById(id);
+    let map,markers=L.featureGroup(),trail=L.polyline([],{color:'#ffcf34',weight:5}),selected=null,timer;
+    const esc=s=>String(s??'');
+    function initializeMap(){
+      if(map)return;
+      map=L.map('map').setView([-19.92,-43.94],5);
+      L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        {maxZoom:21,attribution:'Imagem de satélite © Google'}).addTo(map);
+      markers.addTo(map);trail.addTo(map);
+    }
+    function showWorkspace(){
+      $('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;
+      initializeMap();setTimeout(()=>map.invalidateSize(),20);
+      refresh();refreshIncidents();clearInterval(timer);timer=setInterval(()=>{refresh();refreshIncidents()},10000);
+    }
+    function age(at){return at?Math.max(0,Math.floor((Date.now()-at)/60000)):null}
+    function status(record){
+      if(!record.active)return ['Encerrado','ended'];
+      if(!record.position)return ['Aguardando GPS','stale'];
+      const minutes=age(record.position.at);
+      return minutes>2?['Sem sinal há '+minutes+' min','stale']:['Em tempo real',''];
+    }
+    async function refresh(){
+      try{
+        const response=await fetch('/api/monitor/sessions',{cache:'no-store'});
+        if(response.status===401){clearInterval(timer);$('workspace').hidden=true;$('logout').hidden=true;$('login').hidden=false;return}
+        if(!response.ok)throw Error('Não foi possível carregar as sessões');
+        const records=await response.json();
+        $('activeCount').textContent=records.filter(r=>r.active).length;
+        $('updated').textContent='Atualizado às '+new Date().toLocaleTimeString('pt-BR')+' · atualização a cada 10 segundos';
+        $('list').replaceChildren();markers.clearLayers();
+        for(const record of records){
+          const [label,kind]=status(record);
+          const item=document.createElement('button');item.className='item'+(selected===record.id?' selected':'');
+          const name=document.createElement('strong');name.textContent=(record.kind==='fleet'?'📱 ':'🔗 ')+esc(record.name);item.append(name);
+          const state=document.createElement('small');state.textContent=label+' · '+record.pointCount+' posições';item.append(state);
+          item.onclick=()=>select(record.id);$('list').append(item);
+          if(record.position){
+            const marker=L.circleMarker([record.position.lat,record.position.lon],{
+              radius:selected===record.id?11:8,color:'#fff',weight:2,fillColor:kind==='ended'?'#64748b':kind==='stale'?'#f59e0b':'#e3343b',fillOpacity:1});
+            marker.bindTooltip(esc(record.name)+' · '+label);marker.on('click',()=>select(record.id));markers.addLayer(marker);
+          }
+        }
+        if(selected&&!records.some(r=>r.id===selected)){selected=null;trail.setLatLngs([]);$('detail').textContent='Sessão expirada ou indisponível.'}
+        if(selected)await showDetail(selected,false);
+        else if(records.some(r=>r.position)){const bounds=markers.getBounds();if(bounds.isValid())map.fitBounds(bounds.pad(.2),{maxZoom:15})}
+      }catch(error){$('updated').textContent=error.message}
+    }
+    async function select(id){selected=id;await showDetail(id,true);refresh()}
+    async function refreshIncidents(){
+      try{
+        const response=await fetch('/api/monitor/incidents',{cache:'no-store'});
+        if(!response.ok)return;
+        const incidents=await response.json(),container=$('incidents');container.replaceChildren();
+        if(!incidents.length){container.textContent='Nenhuma ocorrência recebida.';return}
+        for(const item of incidents){
+          const block=document.createElement('div');block.className='item';
+          const title=document.createElement('strong');title.textContent=item.deviceName+' · '+new Date(item.at).toLocaleString('pt-BR');block.append(title);
+          const message=document.createElement('p');message.textContent=item.message||'Anexo enviado sem texto';block.append(message);
+          if(item.position){const coordinates=document.createElement('small');coordinates.textContent='Posição: '+item.position.lat.toFixed(7)+', '+item.position.lon.toFixed(7);block.append(coordinates)}
+          if(item.hasMedia){const media=document.createElement('a');media.href='/api/monitor/incidents/'+item.id+'/media';
+            media.target='_self';media.textContent='Abrir '+(item.mime.startsWith('image/')?'foto':item.mime.startsWith('video/')?'vídeo':'áudio');
+            block.append(media)}
+          container.append(block);
+        }
+      }catch{}
+    }
+    async function showDetail(id,focus){
+      const response=await fetch('/api/monitor/sessions/'+id,{cache:'no-store'});
+      if(!response.ok)return;
+      const data=await response.json();if(selected!==id)return;
+      trail.setLatLngs(data.points.map(p=>[p.lat,p.lon]));
+      const detail=$('detail');detail.replaceChildren();
+      const title=document.createElement('strong');title.textContent=data.name;detail.append(title);
+      const lines=[status(data)[0],data.position?'Última posição: '+new Date(data.position.at).toLocaleString('pt-BR'):'Sem posição recebida',
+        data.position?'Coordenadas: '+data.position.lat.toFixed(7)+', '+data.position.lon.toFixed(7):'',
+        data.position?'Precisão GPS estimada: ±'+Math.round(data.position.accuracy)+' m':'',
+        'Posições na trilha: '+data.points.length,data.endReason?'Motivo do encerramento: '+data.endReason:''];
+      for(const line of lines.filter(Boolean)){const p=document.createElement('p');p.textContent=line;detail.append(p)}
+      if(data.kind==='fleet'&&data.active){
+        const revoke=document.createElement('button');revoke.textContent='Desvincular aparelho';
+        revoke.onclick=async()=>{
+          if(!confirm('Desvincular este aparelho da central? O envio de novas posições será bloqueado.'))return;
+          const response=await fetch('/api/monitor/fleet/'+id,{method:'DELETE'});
+          if(response.ok)refresh();else alert('Não foi possível desvincular o aparelho.');
+        };detail.append(revoke);
+      }
+      if(focus&&data.position)map.setView([data.position.lat,data.position.lon],16);
+    }
+    $('form').onsubmit=async event=>{
+      event.preventDefault();$('error').textContent='';
+      try{
+        const response=await fetch('/api/monitor/login',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({email:$('email').value,password:$('password').value})});
+        $('password').value='';
+        if(!response.ok)throw Error(response.status===429?'Muitas tentativas. Tente novamente em 15 minutos.':'E-mail ou senha inválidos.');
+        showWorkspace();
+      }catch(error){$('error').textContent=error.message}
+    };
+    $('logout').onclick=async()=>{await fetch('/api/monitor/logout',{method:'POST'});location.reload()};
+    $('newCode').onclick=async()=>{
+      const response=await fetch('/api/monitor/enroll-codes',{method:'POST'});
+      if(!response.ok){$('codeBox').textContent='Não foi possível criar o código.';return}
+      const data=await response.json();
+      $('codeBox').textContent='Código de uso único: '+data.code+' · válido por 15 minutos. Digite no CapLoc do aparelho.';
+    };
+    fetch('/api/monitor/sessions').then(r=>{if(r.ok)showWorkspace()}).catch(()=>{});
+  </script>
+</body>
+</html>
