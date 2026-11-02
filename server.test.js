@@ -22,6 +22,10 @@ test('private live session, upload and public viewer',async()=>{
     assert.ok(ready,'server started');
     const unauthorized=await fetch(base+'/api/sessions',{method:'POST',body:'{}'});
     assert.equal(unauthorized.status,401);
+    const automatic=await fetch(base+'/api/public-sessions',{method:'POST',
+      body:JSON.stringify({name:'Teste automático',ttlHours:12})});
+    assert.equal(automatic.status,201);
+    assert.equal((await automatic.json()).id.length,43);
     const created=await fetch(base+'/api/sessions',{method:'POST',headers:{Authorization:'Bearer '+admin},
       body:JSON.stringify({name:'Caminho de teste',ttlHours:1})});
     assert.equal(created.status,201);

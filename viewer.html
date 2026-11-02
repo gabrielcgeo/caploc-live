@@ -23,6 +23,7 @@
     <p id="status">Carregando localização…</p>
     <p id="last"></p>
     <p id="accuracy"></p>
+    <p id="weather">Tempo no local: aguardando…</p>
     <p id="end"></p>
     <div class="legend"><span class="dot"></span> Última posição recebida &nbsp; <span class="line"></span> Trilha percorrida<br>
       <small>Imagem de satélite © Google · posição e horário enviados pelo telefone</small></div>
@@ -35,8 +36,29 @@
     const streets=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
       {attribution:'© OpenStreetMap contributors',maxZoom:19});
     L.control.layers({'Satélite':satellite,'Ruas':streets}).addTo(map);
-    let marker,circle,trail,first=true;
+    let marker,circle,trail,first=true,lastWeatherAt=0,lastWeatherKey='';
     const $=id=>document.getElementById(id);
+    const weatherLabel=code=>({0:'Céu limpo',1:'Predominantemente limpo',2:'Parcialmente nublado',
+      3:'Nublado',45:'Neblina',48:'Neblina',51:'Garoa',53:'Garoa',55:'Garoa',
+      61:'Chuva',63:'Chuva',65:'Chuva forte',80:'Pancadas de chuva',81:'Pancadas de chuva',
+      82:'Pancadas fortes',95:'Trovoadas'})[code]||'Condição variável';
+    async function refreshWeather(point){
+      const key=point.lat.toFixed(2)+','+point.lon.toFixed(2),now=Date.now();
+      if(key===lastWeatherKey&&now-lastWeatherAt<600000)return;
+      lastWeatherKey=key;lastWeatherAt=now;
+      try{
+        const response=await fetch('/api/public/__SESSION_ID__/weather',{cache:'no-store'});
+        if(!response.ok)throw Error('indisponível');
+        const weather=await response.json(),current=weather.current;
+        if(!current)throw Error('indisponível');
+        const parts=['Tempo no local: '+weatherLabel(current.weather_code),
+          Math.round(current.temperature_2m)+' °C',
+          'umidade '+Math.round(current.relative_humidity_2m)+'%',
+          'vento '+Math.round(current.wind_speed_10m)+' km/h'];
+        if(current.precipitation>0)parts.push('chuva '+current.precipitation+' mm');
+        $('weather').textContent=parts.join(' · ');
+      }catch{$('weather').textContent='Tempo no local: indisponível no momento'}
+    }
     async function refresh(){
       try{
         const response=await fetch('/api/public/__SESSION_ID__',{cache:'no-store'});
@@ -65,6 +87,7 @@
         $('last').textContent='Último envio: '+new Date(point.at).toLocaleString('pt-BR')+
           ' · '+point.lat.toFixed(7)+', '+point.lon.toFixed(7);
         $('accuracy').textContent='Precisão GPS estimada: ±'+Math.round(point.accuracy||0)+' m';
+        refreshWeather(point);
       }catch(error){$('status').className='stale';$('status').textContent=error.message}
     }
     refresh();setInterval(refresh,15000);

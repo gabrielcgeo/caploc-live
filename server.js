@@ -66,23 +66,56 @@ async function save(record) {
 }
 function bearer(request) { const value=request.headers.authorization||''; return value.startsWith('Bearer ')?value.slice(7):''; }
 const token=()=>randomBytes(32).toString('base64url');
+const publicCreates=new Map();
+let globalCreates=[];
+const weatherCache=new Map();
+function mayCreate(request) {
+  const now=Date.now(),hourAgo=now-3600000;
+  globalCreates=globalCreates.filter(at=>at>hourAgo);
+  const ip=String(request.headers['x-forwarded-for']||request.socket.remoteAddress||'unknown')
+    .split(',')[0].trim().slice(0,80);
+  const recent=(publicCreates.get(ip)||[]).filter(at=>at>hourAgo);
+  if(globalCreates.length>=60||recent.length>=8) return false;
+  recent.push(now);publicCreates.set(ip,recent);globalCreates.push(now);
+  return true;
+}
+async function createSession(input) {
+  const hours=Number(input.ttlHours||12);
+  if(!Number.isFinite(hours)||hours<1||hours>24) return null;
+  const id=randomBytes(32).toString('base64url'),uploadToken=token();
+  const record={id,name:String(input.name||'CapLoc Explorer').slice(0,80),
+    uploadHash:tokenHash(uploadToken).toString('hex'),expiresAt:Date.now()+hours*3600000,
+    active:true,points:[],position:null};
+  await save(record);
+  return {id,uploadToken,viewerUrl:publicBase+'/s/'+id,expiresAt:record.expiresAt};
+}
+async function weatherFor(point) {
+  const lat=Math.round(point.lat*100)/100,lon=Math.round(point.lon*100)/100;
+  const key=lat+','+lon,cached=weatherCache.get(key),now=Date.now();
+  if(cached&&cached.expires>now) return cached.value;
+  const url='https://api.open-meteo.com/v1/forecast?latitude='+lat+'&longitude='+lon+
+    '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m'+
+    '&hourly=precipitation_probability&forecast_days=1&timezone=auto';
+  const response=await fetch(url,{signal:AbortSignal.timeout(8000)});
+  if(!response.ok) throw new Error('weather_unavailable');
+  const data=await response.json();
+  const value={current:data.current||null,hourly:data.hourly||null,at:now};
+  weatherCache.set(key,{expires:now+600000,value});
+  return value;
+}
 const viewerTemplate=await readFile(new URL('./viewer.html',import.meta.url),'utf8');
 function viewer(id) { return viewerTemplate.replace('__SESSION_ID__',id); }
 const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
     if(request.method==='GET'&&url.pathname==='/health') return send(response,200,{ok:true});
-    if(request.method==='POST'&&url.pathname==='/api/sessions') {
-      if(!equalHash(bearer(request),tokenHash(adminToken).toString('hex'))) return send(response,401,{error:'unauthorized'});
-      const input=await body(request);
-      const hours=Number(input.ttlHours||12);
-      if(!Number.isFinite(hours)||hours<1||hours>24) return send(response,400,{error:'invalid_ttl'});
-      const id=randomBytes(32).toString('base64url'),uploadToken=token();
-      const record={id,name:String(input.name||'CapLoc Explorer').slice(0,80),
-        uploadHash:tokenHash(uploadToken).toString('hex'),expiresAt:Date.now()+hours*3600000,
-        active:true,points:[],position:null};
-      await save(record);
-      return send(response,201,{id,uploadToken,viewerUrl:publicBase+'/s/'+id,expiresAt:record.expiresAt});
+    if(request.method==='POST'&&(url.pathname==='/api/sessions'||url.pathname==='/api/public-sessions')) {
+      const anonymous=url.pathname==='/api/public-sessions';
+      if(!anonymous&&!equalHash(bearer(request),tokenHash(adminToken).toString('hex')))
+        return send(response,401,{error:'unauthorized'});
+      if(anonymous&&!mayCreate(request)) return send(response,429,{error:'rate_limited'});
+      const created=await createSession(await body(request));
+      return created?send(response,201,created):send(response,400,{error:'invalid_ttl'});
     }
     const update=url.pathname.match(/^\/api\/sessions\/([A-Za-z0-9_-]{43})\/position$/);
     const stop=url.pathname.match(/^\/api\/sessions\/([A-Za-z0-9_-]{43})$/);
@@ -106,7 +139,14 @@ const server=createServer(async(request,response)=>{
       await save(record);return send(response,200,{ok:true,at:point.at});
     }
     const publicMatch=url.pathname.match(/^\/api\/public\/([A-Za-z0-9_-]{43})$/);
+    const weatherMatch=url.pathname.match(/^\/api\/public\/([A-Za-z0-9_-]{43})\/weather$/);
     const pageMatch=url.pathname.match(/^\/s\/([A-Za-z0-9_-]{43})$/);
+    if(request.method==='GET'&&weatherMatch) {
+      const record=await load(weatherMatch[1]);
+      if(!record||!record.position) return send(response,404,{error:'not_found'});
+      try { return send(response,200,await weatherFor(record.position)); }
+      catch { return send(response,503,{error:'weather_unavailable'}); }
+    }
     if(request.method==='GET'&&(publicMatch||pageMatch)) {
       const record=await load((publicMatch||pageMatch)[1]);
       if(!record) return send(response,404,{error:'not_found'});
