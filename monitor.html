@@ -50,7 +50,7 @@
   <script>
     const $=id=>document.getElementById(id);
     let map,markers,trail,selected=null,timer;
-    const esc=s=>String(s??'');
+    const esc=s=>String(s===null||s===undefined?'':s);
     function initializeMap(){
       if(map)return;
       if(!window.L){$('updated').textContent='Mapa indisponível; lista e ocorrências continuam acessíveis.';return}
