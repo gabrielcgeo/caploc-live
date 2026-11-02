@@ -14,6 +14,8 @@
     .legend{margin-top:9px;border-top:1px solid #d9e2ee;padding-top:9px;font-size:13px}
     .dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:#e33b44;border:2px solid white;box-shadow:0 0 0 1px #555}
     .line{display:inline-block;width:22px;border-top:4px solid #ffd324;vertical-align:middle}
+    .care{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}.care a{display:inline-block;
+      padding:7px 9px;border-radius:9px;background:#e8f0fb;color:#173b66;font-weight:650;text-decoration:none}
   </style>
 </head>
 <body>
@@ -25,6 +27,9 @@
     <p id="accuracy"></p>
     <p id="weather">Tempo no local: aguardando…</p>
     <p id="end"></p>
+    <div class="care"><a id="hospital" target="_blank" rel="noopener noreferrer" hidden>Hospitais no mapa</a>
+      <a href="https://soroja.com.br/" target="_blank" rel="noopener noreferrer">Locais com soro · SoroJá</a>
+      <a href="tel:192">SAMU 192</a></div>
     <div class="legend"><span class="dot"></span> Última posição recebida &nbsp; <span class="line"></span> Trilha percorrida<br>
       <small>Imagem de satélite © Google · posição e horário enviados pelo telefone</small></div>
   </section>
@@ -87,6 +92,9 @@
         $('last').textContent='Último envio: '+new Date(point.at).toLocaleString('pt-BR')+
           ' · '+point.lat.toFixed(7)+', '+point.lon.toFixed(7);
         $('accuracy').textContent='Precisão GPS estimada: ±'+Math.round(point.accuracy||0)+' m';
+        $('hospital').href='https://www.google.com/maps/search/?api=1&query='+
+          encodeURIComponent('hospital perto de '+point.lat.toFixed(7)+','+point.lon.toFixed(7));
+        $('hospital').hidden=false;
         refreshWeather(point);
       }catch(error){$('status').className='stale';$('status').textContent=error.message}
     }
