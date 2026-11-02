@@ -144,6 +144,34 @@ async function fleetRecords() {
   }
   return records.sort((a,b)=>(b.position?.at||0)-(a.position?.at||0));
 }
+function validCpf(value) {
+  if(!/^\d{11}$/.test(value)||/^(\d)\1{10}$/.test(value))return false;
+  for(let size=9;size<=10;size++) {
+    let sum=0;for(let i=0;i<size;i++)sum+=Number(value[i])*(size+1-i);
+    const digit=(sum*10)%11%10;
+    if(digit!==Number(value[size]))return false;
+  }
+  return true;
+}
+function normalizeFleetProfile(input) {
+  if(!input||typeof input!=='object'||Array.isArray(input))return null;
+  const responsibleName=String(input.responsibleName||'').trim().slice(0,80);
+  const mission=String(input.mission||'').trim().slice(0,120);
+  const phone=String(input.phone||'').replace(/\D/g,'');
+  const email=String(input.email||'').trim().toLowerCase();
+  const emergencyName=String(input.emergencyName||'').trim().slice(0,80);
+  const emergencyPhone=String(input.emergencyPhone||'').replace(/\D/g,'');
+  const birthDate=String(input.birthDate||'').trim();
+  const cpf=String(input.cpf||'').replace(/\D/g,'');
+  const date=new Date(birthDate+'T00:00:00Z');
+  if(responsibleName.length<2||mission.length<2||phone.length<10||phone.length>15||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254||
+    emergencyName.length<2||emergencyPhone.length<10||emergencyPhone.length>15||
+    !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)||Number.isNaN(date.getTime())||
+    date.toISOString().slice(0,10)!==birthDate||birthDate<'1900-01-01'||
+    birthDate>new Date().toISOString().slice(0,10)||!validCpf(cpf))return null;
+  return {responsibleName,mission,phone,email,emergencyName,emergencyPhone,birthDate,cpf};
+}
 function incidentPath(id) { if(!idPattern.test(id)) throw new Error('invalid_id'); return join(dataDir,'incident-'+id+'.json'); }
 async function loadIncident(id) {
   try {return unseal(await readFile(incidentPath(id),'utf8'));}
@@ -160,7 +188,36 @@ async function incidentRecords() {
     try {const record=await loadIncident(name.slice(9,-5));if(record)records.push(record);}
     catch(error){console.error('Incident unavailable',error)}
   }
-  return records.sort((a,b)=>b.at-a.at).slice(0,200);
+  records.sort((a,b)=>b.at-a.at);
+  return [...records.filter(item=>incidentOpen.has(item.status||'new')),
+    ...records.filter(item=>!incidentOpen.has(item.status||'new')).slice(0,200)];
+}
+const incidentLocks=new Map();
+function updateIncident(id,operation) {
+  const previous=incidentLocks.get(id)||Promise.resolve();
+  const job=previous.catch(()=>{}).then(operation);
+  incidentLocks.set(id,job);
+  job.finally(()=>{if(incidentLocks.get(id)===job)incidentLocks.delete(id)}).catch(()=>{});
+  return job;
+}
+const incidentOpen=new Set(['new','acknowledged','in_progress','waiting']);
+const incidentPriorities=new Set(['normal','high','critical']);
+const incidentCategories=new Set(['accident','health','equipment','weather','route','other']);
+function incidentView(record,field=false) {
+  const {media,tokenHash,...data}=record;
+  const timeline=Array.isArray(data.timeline)?data.timeline:[];
+  return {...data,status:data.status||'new',priority:data.priority||'normal',
+    category:data.category||'other',updatedAt:data.updatedAt||data.at,
+    timeline:field?timeline.filter(item=>item.kind==='reply'||item.kind==='field_message'||
+      item.kind==='status'||item.kind==='resolution').map(item=>({...item,
+        actor:item.actor===monitorEmail?'Central':item.actor})):timeline,
+    hasMedia:!!media};
+}
+function addIncidentEvent(record,kind,text,actor) {
+  if(!Array.isArray(record.timeline))record.timeline=[];
+  record.timeline.push({at:Date.now(),kind,text,actor});
+  if(record.timeline.length>200)record.timeline.splice(0,record.timeline.length-200);
+  record.updatedAt=Date.now();
 }
 const publicCreates=new Map();
 let globalCreates=[];
@@ -277,12 +334,38 @@ const server=createServer(async(request,response)=>{
       if(!expires||expires<Date.now()) return send(response,401,{error:'invalid_code'});
       const name=String(input.name||'').trim().slice(0,80);
       if(name.length<2) return send(response,400,{error:'invalid_name'});
+      const profile=input.profile===undefined?null:normalizeFleetProfile(input.profile);
+      if(input.profile!==undefined&&!profile)return send(response,400,{error:'invalid_profile'});
       const id=token(),deviceToken=token();
       await saveFleet({id,name,tokenHash:tokenHash(deviceToken).toString('hex'),
-        enrolledAt:Date.now(),active:true,position:null,points:[]});
-      return send(response,201,{id,deviceToken,name});
+        enrolledAt:Date.now(),active:true,position:null,points:[],profile});
+      return send(response,201,{id,deviceToken,name,profileComplete:!!profile});
+    }
+    const fleetProfile=url.pathname.match(/^\/api\/fleet\/([A-Za-z0-9_-]{43})\/profile$/);
+    if(fleetProfile&&['GET','PUT'].includes(request.method)) {
+      const device=await loadFleet(fleetProfile[1]);
+      if(!device||!device.active||!equalHash(bearer(request),device.tokenHash))
+        return send(response,401,{error:'unauthorized'});
+      if(request.method==='GET')return send(response,200,{name:device.name,profile:device.profile||null});
+      const input=await body(request),profile=normalizeFleetProfile(input.profile);
+      if(!profile)return send(response,400,{error:'invalid_profile'});
+      device.profile=profile;
+      if(input.name!==undefined) {
+        const name=String(input.name).trim().slice(0,80);
+        if(name.length<2)return send(response,400,{error:'invalid_name'});
+        device.name=name;
+      }
+      await saveFleet(device);return send(response,200,{name:device.name,profileComplete:true});
     }
     const incidentUpload=url.pathname.match(/^\/api\/fleet\/([A-Za-z0-9_-]{43})\/incidents$/);
+    if(request.method==='GET'&&incidentUpload) {
+      const device=await loadFleet(incidentUpload[1]);
+      if(!device||!device.active||!equalHash(bearer(request),device.tokenHash))
+        return send(response,401,{error:'unauthorized'});
+      const incidents=await incidentRecords();
+      return send(response,200,incidents.filter(item=>item.deviceId===device.id)
+        .map(item=>incidentView(item,true)));
+    }
     if(request.method==='POST'&&incidentUpload) {
       const device=await loadFleet(incidentUpload[1]);
       if(!device)return send(response,404,{error:'not_found'});
@@ -290,6 +373,8 @@ const server=createServer(async(request,response)=>{
         return send(response,401,{error:'unauthorized'});
       const input=await body(request,12*1024*1024);
       const message=String(input.message||'').trim().slice(0,2000);
+      const category=incidentCategories.has(input.category)?input.category:'other';
+      const priority=incidentPriorities.has(input.priority)?input.priority:'normal';
       const mime=String(input.mime||'');
       const allowed=/^(image\/(jpeg|png|webp|heic|heif)|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|ogg|wav|x-wav|3gpp|amr|aac))$/;
       const media=String(input.media||'');
@@ -303,13 +388,73 @@ const server=createServer(async(request,response)=>{
           position={lat,lon};
       }
       const record={id:token(),deviceId:device.id,deviceName:device.name,at:Date.now(),
-        message,mime:media?mime:null,media:media||null,position};
+        updatedAt:Date.now(),status:'new',priority,category,assignedTo:null,dueAt:null,
+        resolution:null,timeline:[],message,mime:media?mime:null,media:media||null,position};
       await saveIncident(record);return send(response,201,{id:record.id,at:record.at});
+    }
+    const fieldMessage=url.pathname.match(/^\/api\/fleet\/([A-Za-z0-9_-]{43})\/incidents\/([A-Za-z0-9_-]{43})\/messages$/);
+    if(request.method==='POST'&&fieldMessage) {
+      const device=await loadFleet(fieldMessage[1]);
+      if(!device||!device.active||!equalHash(bearer(request),device.tokenHash))
+        return send(response,401,{error:'unauthorized'});
+      const input=await body(request),message=String(input.message||'').trim();
+      if(message.length<1||message.length>2000)return send(response,400,{error:'invalid_message'});
+      return updateIncident(fieldMessage[2],async()=>{
+        const record=await loadIncident(fieldMessage[2]);
+        if(!record||record.deviceId!==device.id)return send(response,404,{error:'not_found'});
+        if(!incidentOpen.has(record.status||'new'))return send(response,409,{error:'incident_closed'});
+        addIncidentEvent(record,'field_message',message,device.name);
+        await saveIncident(record);return send(response,200,{ok:true,updatedAt:record.updatedAt});
+      });
     }
     if(request.method==='GET'&&url.pathname==='/api/monitor/incidents') {
       if(!monitorAuthenticated(request))return send(response,401,{error:'unauthorized'});
       const incidents=await incidentRecords();
-      return send(response,200,incidents.map(({media,...rest})=>({...rest,hasMedia:!!media})));
+      return send(response,200,incidents.map(item=>incidentView(item)));
+    }
+    const incidentAction=url.pathname.match(/^\/api\/monitor\/incidents\/([A-Za-z0-9_-]{43})$/);
+    if(request.method==='PATCH'&&incidentAction) {
+      if(!monitorAuthenticated(request))return send(response,401,{error:'unauthorized'});
+      const input=await body(request),action=String(input.action||'');
+      return updateIncident(incidentAction[1],async()=>{
+        const record=await loadIncident(incidentAction[1]);
+        if(!record)return send(response,404,{error:'not_found'});
+        const current=record.status||'new';
+        const text=String(input.text||'').trim();
+        if(action==='acknowledge'&&current==='new') {
+          record.status='acknowledged';record.assignedTo=monitorEmail;
+          addIncidentEvent(record,'status','Recebida pela central',monitorEmail);
+        } else if(action==='start'&&['new','acknowledged','waiting'].includes(current)) {
+          record.status='in_progress';record.assignedTo=monitorEmail;
+          addIncidentEvent(record,'status','Atendimento iniciado',monitorEmail);
+        } else if(action==='wait'&&['acknowledged','in_progress'].includes(current)) {
+          record.status='waiting';addIncidentEvent(record,'status','Aguardando retorno',monitorEmail);
+        } else if(action==='resolve'&&incidentOpen.has(current)&&text.length>=5&&text.length<=2000) {
+          record.status='resolved';record.resolution=text;record.resolvedAt=Date.now();
+          addIncidentEvent(record,'resolution',text,monitorEmail);
+        } else if(action==='close'&&current==='resolved') {
+          record.status='closed';record.closedAt=Date.now();
+          addIncidentEvent(record,'status','Ocorrência finalizada',monitorEmail);
+        } else if(action==='reopen'&&['resolved','closed'].includes(current)) {
+          record.status='in_progress';record.resolvedAt=null;record.closedAt=null;
+          addIncidentEvent(record,'status','Ocorrência reaberta',monitorEmail);
+        } else if(action==='priority'&&incidentPriorities.has(input.priority)&&current!=='closed') {
+          record.priority=input.priority;
+          addIncidentEvent(record,'priority','Prioridade: '+record.priority,monitorEmail);
+        } else if(action==='assign'&&text.length>=2&&text.length<=80&&current!=='closed') {
+          record.assignedTo=text;
+          addIncidentEvent(record,'assignment','Responsável: '+text,monitorEmail);
+        } else if(action==='due'&&current!=='closed'&&
+          (input.dueAt===null||(Number.isFinite(Number(input.dueAt))&&
+            Number(input.dueAt)>Date.now()&&Number(input.dueAt)<Date.now()+30*86400000))) {
+          record.dueAt=input.dueAt===null?null:Number(input.dueAt);
+          addIncidentEvent(record,'due',record.dueAt?'Prazo definido':'Prazo removido',monitorEmail);
+        } else if(['note','reply'].includes(action)&&incidentOpen.has(current)&&
+          text.length>=1&&text.length<=2000) {
+          addIncidentEvent(record,action,text,monitorEmail);
+        } else return send(response,409,{error:'invalid_transition'});
+        await saveIncident(record);return send(response,200,incidentView(record));
+      });
     }
     const mediaMatch=url.pathname.match(/^\/api\/monitor\/incidents\/([A-Za-z0-9_-]{43})\/media$/);
     if(request.method==='GET'&&mediaMatch) {
@@ -350,7 +495,8 @@ const server=createServer(async(request,response)=>{
       const [sessions,fleet]=await Promise.all([monitoredRecords(),fleetRecords()]);
       return send(response,200,[...fleet.map(r=>({id:r.id,kind:'fleet',name:r.name,active:r.active,
         expiresAt:null,endedAt:r.endedAt||null,endReason:null,
-        position:r.position,pointCount:r.points.length})),
+        position:r.position,pointCount:r.points.length,profileComplete:!!r.profile,
+        responsibleName:r.profile?.responsibleName||null,mission:r.profile?.mission||null})),
         ...sessions.map(r=>({id:r.id,kind:'session',name:r.name,active:r.active,
         expiresAt:r.expiresAt,endedAt:r.endedAt||null,endReason:r.endReason||null,
         position:r.position,pointCount:r.points.length}))]);
@@ -364,7 +510,8 @@ const server=createServer(async(request,response)=>{
       if(!record||(kind==='session'&&!record.monitoringEnabled)) return send(response,404,{error:'not_found'});
       return send(response,200,{id:record.id,kind,name:record.name,active:record.active,
         expiresAt:record.expiresAt,endedAt:record.endedAt||null,endReason:record.endReason||null,
-        position:record.position,points:record.points});
+        position:record.position,points:record.points,
+        profile:kind==='fleet'?record.profile||null:undefined});
     }
     if(request.method==='GET'&&url.pathname==='/api/nearby-care') {
       const lat=Number(url.searchParams.get('lat')),lon=Number(url.searchParams.get('lon'));

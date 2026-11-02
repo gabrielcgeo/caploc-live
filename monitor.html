@@ -22,11 +22,30 @@
     #detail{margin-top:16px;padding-top:12px;border-top:1px solid #d2deea;line-height:1.6;overflow-wrap:anywhere}
     #error{color:#a82732;min-height:1.4em}.muted{color:#5c7188}#logout{background:#315576}
     #qrBox{margin:12px 0;padding:12px;background:#f0f5fa;border-radius:12px;text-align:center}#qrImage{display:block;width:min(100%,260px);height:auto;margin:4px auto;border-radius:8px}#qrBox small{display:block;overflow-wrap:anywhere}
+    header .headerActions{display:flex;gap:8px;align-items:center}#enableAlerts{background:#b91c1c}
+    .queueTitle{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:20px}
+    .queueTitle h2{margin:0}.queueTitle strong{background:#b91c1c;color:white;border-radius:20px;padding:4px 10px}
+    #incidentFilter{width:100%;padding:9px;margin:10px 0;border:1px solid #b7c5d5;border-radius:9px;background:white}
+    .incidentCard{border:2px solid #d7e1ed;border-radius:13px;margin:10px 0;padding:12px;background:#fff}
+    .incidentCard.open{border-color:#c52d35;background:#fff6f6}.incidentCard.critical{border-color:#8d0b14;background:#ffe7e7}
+    .incidentCard header{padding:0;background:transparent;color:#172b46;display:flex;align-items:flex-start}
+    .incidentCard h3{font-size:16px;margin:0 0 5px}.incidentCard p{margin:7px 0;overflow-wrap:anywhere}
+    .incidentMeta{font-size:12px;color:#526b85}.incidentActions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+    .incidentActions button{padding:8px 10px;font-size:12px}.incidentActions .urgent{background:#b91c1c}
+    .incidentCard .timeline{border-top:1px solid #d7e1ed;margin-top:10px;padding-top:8px;font-size:12px}
+    .incidentCard .timeline p{margin:4px 0}.incidentCard a{color:#1264b3}
+    #incidentAlert{position:fixed;right:18px;bottom:18px;z-index:1000;width:min(370px,calc(100vw - 36px));max-height:55vh;overflow:auto;background:#a71920;color:white;padding:16px;border-radius:16px;box-shadow:0 12px 36px #42000688}
+    #incidentAlert h2{font-size:18px;margin:0 0 9px}#incidentAlert .alertRow{border-top:1px solid #ffffff77;padding:9px 0;cursor:pointer}#incidentAlert small{display:block;color:#ffe1e1}
+    #incidentEditor{position:fixed;inset:0;z-index:1200;background:#08182ba8;display:grid;place-items:center;padding:16px}
+    #incidentEditor .editorCard{width:min(480px,100%);background:white;color:#172b46;padding:22px;border-radius:16px;box-shadow:0 10px 35px #0005}
+    #incidentEditor h2{margin:0 0 10px}#incidentEditor textarea{width:100%;min-height:100px;padding:10px;font:inherit;border:1px solid #b7c5d5;border-radius:8px}
+    #incidentEditor select,#incidentEditor input{width:100%;padding:10px;border:1px solid #b7c5d5;border-radius:8px}
+    #incidentEditor .editorActions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
     @media(max-width:750px){#workspace{display:flex;flex-direction:column;height:auto}aside{max-height:44vh}#map{height:56vh;min-height:320px}}
   </style>
 </head>
 <body>
-  <header><h1>CapLoc · Central de Monitoramento Integrada</h1><button id="logout" hidden>Sair</button></header>
+  <header><h1>CapLoc · Central de Monitoramento Integrada</h1><div class="headerActions"><button id="enableAlerts" hidden>🔔 Ativar alertas</button><button id="logout" hidden>Sair</button></div></header>
   <section id="login">
     <h2>Acesso administrativo</h2>
     <p class="muted">Sessões compartilhadas voluntariamente pelos usuários do CapLoc.</p>
@@ -44,14 +63,20 @@
       <div id="qrBox" hidden><img id="qrImage" alt="QR code temporário para vincular aparelhos ao CapLoc"><small>Abra Explorer → Compartilhar → Ler QR da central em cada CapLoc. O mesmo QR vincula vários aparelhos durante 2 horas; cada um recebe sua identificação e chave próprias.</small></div>
       <div id="list" aria-label="Clientes compartilhando localização"></div>
       <div id="detail"><span class="muted">Selecione uma pessoa ou projeto para ver a posição e a trilha.</span></div>
-      <h2>Ocorrências recebidas</h2><div id="incidents" aria-live="polite"></div>
+      <div class="queueTitle"><h2>Ocorrências</h2><strong id="openCount">0 abertas</strong></div>
+      <select id="incidentFilter" aria-label="Filtrar ocorrências"><option value="open">Abertas primeiro</option><option value="all">Todas</option><option value="closed">Concluídas e finalizadas</option></select>
+      <div id="incidents" aria-live="polite"></div>
     </aside>
     <div id="map" aria-label="Mapa das posições compartilhadas"></div>
   </main>
+  <section id="incidentAlert" role="alert" aria-live="assertive" hidden></section>
+  <section id="incidentEditor" hidden><div class="editorCard"><h2 id="editorTitle"></h2><label id="editorLabel" for="editorText"></label><textarea id="editorText"></textarea><select id="editorSelect" hidden><option value="normal">Normal</option><option value="high">Alta</option><option value="critical">Crítica</option></select><input id="editorDue" type="datetime-local" hidden><p id="editorError" role="alert"></p><div class="editorActions"><button id="editorCancel" type="button">Cancelar</button><button id="editorSave" type="button">Salvar</button></div></div></section>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const $=id=>document.getElementById(id);
-    let map,markers,trail,selected=null,timer;
+    let map,markers,trail,selected=null,timer,incidentsLoaded=false,editorAction=null,editorId=null;
+    let alertAudio=null,alertSoundEnabled=false;
+    const seenIncidents=new Set();
     const esc=s=>String(s===null||s===undefined?'':s);
     function initializeMap(){
       if(map)return;
@@ -64,6 +89,8 @@
     }
     function showWorkspace(){
       $('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;
+      $('enableAlerts').hidden=alertSoundEnabled;
+      $('enableAlerts').textContent='🔔 Ativar som e notificações';
       initializeMap();if(map)setTimeout(()=>map.invalidateSize(),20);
       refresh();refreshIncidents();clearInterval(timer);timer=setInterval(()=>{refresh();refreshIncidents()},10000);
     }
@@ -87,7 +114,11 @@
           const [label,kind]=status(record);
           const item=document.createElement('button');item.className='item'+(selected===record.id?' selected':'');
           const name=document.createElement('strong');name.textContent=(record.kind==='fleet'?'📱 ':'🔗 ')+esc(record.name);item.append(name);
-          const state=document.createElement('small');state.textContent=label+' · '+record.pointCount+' posições';item.append(state);
+          if(record.kind==='fleet'&&record.responsibleName){const person=document.createElement('small');
+            person.textContent='Responsável: '+record.responsibleName+
+              (record.mission?' · '+record.mission:'');item.append(person)}
+          const state=document.createElement('small');state.textContent=label+' · '+record.pointCount+' posições'+
+            (record.kind==='fleet'&&!record.profileComplete?' · cadastro pendente':'');item.append(state);
           item.onclick=()=>select(record.id);$('list').append(item);
           if(record.position&&markers){
             const marker=L.circleMarker([record.position.lat,record.position.lon],{
@@ -101,23 +132,157 @@
       }catch(error){$('updated').textContent=error.message}
     }
     async function select(id){selected=id;await showDetail(id,true);refresh()}
+    const openIncident=item=>!['resolved','closed'].includes(item.status||'new');
+    const priorityText={normal:'Normal',high:'Alta',critical:'Crítica'};
+    const statusText={new:'Nova',acknowledged:'Recebida',in_progress:'Em atendimento',
+      waiting:'Aguardando retorno',resolved:'Concluída',closed:'Finalizada'};
+    const categoryText={accident:'Acidente',health:'Saúde',equipment:'Equipamento',
+      weather:'Clima',route:'Deslocamento',other:'Outro'};
+    function incidentButton(parent,label,action,item,urgent){
+      const button=document.createElement('button');button.textContent=label;
+      if(urgent)button.className='urgent';
+      button.onclick=()=>{
+        if(['reply','note','resolve','assign','priority','due'].includes(action))openIncidentEditor(item,action);
+        else updateIncident(item.id,{action});
+      };parent.append(button);
+    }
+    async function updateIncident(id,change){
+      try{
+        const response=await fetch('/api/monitor/incidents/'+id,{method:'PATCH',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify(change)});
+        if(!response.ok)throw Error('Não foi possível registrar a ação. Atualize e tente novamente.');
+        $('incidentEditor').hidden=true;await refreshIncidents();
+      }catch(error){$('editorError').textContent=error.message;$('incidentEditor').hidden=false}
+    }
+    function openIncidentEditor(item,action){
+      editorId=item.id;editorAction=action;$('editorError').textContent='';
+      const labels={reply:'Responder ao campo',note:'Nota interna da central',
+        resolve:'Como esta ocorrência foi concluída?',assign:'Responsável pelo atendimento',
+        priority:'Prioridade',due:'Prazo para próxima ação'};
+      $('editorTitle').textContent=labels[action];$('editorLabel').textContent=labels[action];
+      $('editorText').hidden=['priority','due'].includes(action);
+      $('editorSelect').hidden=action!=='priority';$('editorDue').hidden=action!=='due';
+      $('editorText').value=action==='assign'?(item.assignedTo||''):'';
+      $('editorSelect').value=item.priority||'normal';
+      $('editorDue').value=item.dueAt?new Date(item.dueAt-new Date().getTimezoneOffset()*60000)
+        .toISOString().slice(0,16):'';
+      $('incidentEditor').hidden=false;
+      if(!$('editorText').hidden)$('editorText').focus();
+    }
+    $('editorCancel').onclick=()=>{$('incidentEditor').hidden=true};
+    $('editorSave').onclick=()=>{
+      const change={action:editorAction};
+      if(editorAction==='priority')change.priority=$('editorSelect').value;
+      else if(editorAction==='due')change.dueAt=$('editorDue').value?
+        new Date($('editorDue').value).getTime():null;
+      else change.text=$('editorText').value.trim();
+      if(editorAction==='resolve'&&change.text.length<5){
+        $('editorError').textContent='Descreva a conclusão em pelo menos 5 caracteres.';return
+      }
+      updateIncident(editorId,change);
+    };
+    $('incidentFilter').onchange=()=>refreshIncidents();
+    $('enableAlerts').onclick=async()=>{
+      const Audio=window.AudioContext||window.webkitAudioContext;
+      if(Audio){alertAudio=new Audio();await alertAudio.resume();alertSoundEnabled=true}
+      if('Notification' in window&&Notification.permission==='default')
+        await Notification.requestPermission();
+      $('enableAlerts').textContent='Alertas ativados';
+      $('enableAlerts').hidden=alertSoundEnabled||('Notification' in window&&Notification.permission==='granted');
+    };
+    function soundIncident(){
+      if(!alertSoundEnabled||!alertAudio)return;
+      try{const tone=alertAudio.createOscillator(),volume=alertAudio.createGain();
+        tone.type='sine';tone.frequency.value=880;volume.gain.value=.08;
+        tone.connect(volume);volume.connect(alertAudio.destination);
+        tone.start();tone.stop(alertAudio.currentTime+.3)}catch(error){}
+    }
+    function announceIncidents(open){
+      const unseen=open.filter(item=>!seenIncidents.has(item.id));
+      for(const item of open)seenIncidents.add(item.id);
+      if(!unseen.length){incidentsLoaded=true;return}
+      if(incidentsLoaded)soundIncident();
+      if(incidentsLoaded&&'Notification' in window&&Notification.permission==='granted'){
+        for(const item of unseen.slice(0,4)){
+          const alert=new Notification('CapLoc · nova ocorrência',{
+            body:item.deviceName+' · '+(item.message||categoryText[item.category]||'Anexo recebido'),
+            tag:'caploc-incident-'+item.id,requireInteraction:true});
+          alert.onclick=()=>{window.focus();const target=document.getElementById('incident-'+item.id);
+            if(target)target.scrollIntoView()};
+        }
+      }
+      incidentsLoaded=true;
+    }
+    function renderIncidentAlert(open){
+      const panel=$('incidentAlert');panel.replaceChildren();panel.hidden=!open.length;
+      if(!open.length){document.title='CapLoc · Central de Monitoramento Integrada';return}
+      document.title='🔴 '+open.length+' ocorrência(s) · CapLoc';
+      const title=document.createElement('h2');title.textContent='🔴 '+open.length+' ocorrência(s) em aberto';panel.append(title);
+      for(const item of open){
+        const row=document.createElement('div');row.className='alertRow';
+        const name=document.createElement('strong');name.textContent=item.deviceName+' · '+(priorityText[item.priority]||'Normal');row.append(name);
+        const info=document.createElement('small');info.textContent=(statusText[item.status]||'Nova')+' · '+
+          new Date(item.at).toLocaleString('pt-BR')+' · '+(item.message||'Anexo recebido').slice(0,110);row.append(info);
+        row.onclick=()=>{const target=document.getElementById('incident-'+item.id);
+          if(target)target.scrollIntoView({behavior:'smooth',block:'center'})};
+        panel.append(row);
+      }
+    }
     async function refreshIncidents(){
       try{
         const response=await fetch('/api/monitor/incidents',{cache:'no-store'});
         if(!response.ok)return;
-        const incidents=await response.json(),container=$('incidents');container.replaceChildren();
-        if(!incidents.length){container.textContent='Nenhuma ocorrência recebida.';return}
-        for(const item of incidents){
-          const block=document.createElement('div');block.className='item';
-          const title=document.createElement('strong');title.textContent=item.deviceName+' · '+new Date(item.at).toLocaleString('pt-BR');block.append(title);
+        const incidents=await response.json(),open=incidents.filter(openIncident);
+        $('openCount').textContent=open.length+' abertas';
+        renderIncidentAlert(open);announceIncidents(open);
+        const container=$('incidents');container.replaceChildren();
+        const filter=$('incidentFilter').value;
+        const shown=filter==='open'?open:filter==='closed'?incidents.filter(item=>!openIncident(item)):
+          [...open,...incidents.filter(item=>!openIncident(item))];
+        if(!shown.length){container.textContent=filter==='open'?'Nenhuma ocorrência aberta.':'Nenhuma ocorrência nesta seleção.';return}
+        for(const item of shown){
+          const status=item.status||'new',active=openIncident(item);
+          const block=document.createElement('article');block.id='incident-'+item.id;
+          block.className='incidentCard'+(active?' open':'')+(item.priority==='critical'?' critical':'');
+          const title=document.createElement('h3');title.textContent=(categoryText[item.category]||'Outro')+' · '+item.deviceName;block.append(title);
+          const meta=document.createElement('div');meta.className='incidentMeta';
+          meta.textContent=(statusText[status]||status)+' · prioridade '+(priorityText[item.priority]||'Normal')+
+            ' · '+new Date(item.at).toLocaleString('pt-BR');block.append(meta);
           const message=document.createElement('p');message.textContent=item.message||'Anexo enviado sem texto';block.append(message);
-          if(item.position){const coordinates=document.createElement('small');coordinates.textContent='Posição: '+item.position.lat.toFixed(7)+', '+item.position.lon.toFixed(7);block.append(coordinates)}
+          if(item.assignedTo){const owner=document.createElement('small');owner.textContent='Responsável: '+item.assignedTo;block.append(owner)}
+          if(item.dueAt){const due=document.createElement('p');due.className='incidentMeta';due.textContent=
+            (item.dueAt<Date.now()&&active?'⚠ PRAZO VENCIDO · ':'Próxima ação até ')+new Date(item.dueAt).toLocaleString('pt-BR');block.append(due)}
+          if(item.position){const coordinates=document.createElement('p');coordinates.className='incidentMeta';
+            coordinates.textContent='Local: '+item.position.lat.toFixed(7)+', '+item.position.lon.toFixed(7);block.append(coordinates)}
           if(item.hasMedia){const media=document.createElement('a');media.href='/api/monitor/incidents/'+item.id+'/media';
             media.target='_self';media.textContent='Abrir '+(item.mime.startsWith('image/')?'foto':item.mime.startsWith('video/')?'vídeo':'áudio');
             block.append(media)}
+          const actions=document.createElement('div');actions.className='incidentActions';
+          if(status==='new')incidentButton(actions,'Assumir','acknowledge',item,true);
+          if(['new','acknowledged','waiting'].includes(status))incidentButton(actions,'Em atendimento','start',item);
+          if(['acknowledged','in_progress'].includes(status))incidentButton(actions,'Aguardar','wait',item);
+          if(active){
+            incidentButton(actions,'Responder','reply',item);
+            incidentButton(actions,'Nota interna','note',item);
+            incidentButton(actions,'Prioridade','priority',item);
+            incidentButton(actions,'Responsável','assign',item);
+            incidentButton(actions,'Prazo','due',item);
+            incidentButton(actions,'Concluir','resolve',item,true);
+          } else if(status==='resolved'){
+            incidentButton(actions,'Finalizar','close',item);
+            incidentButton(actions,'Reabrir','reopen',item);
+          } else incidentButton(actions,'Reabrir','reopen',item);
+          if(item.position){const locate=document.createElement('button');locate.textContent='Localizar';
+            locate.onclick=()=>{if(map)map.setView([item.position.lat,item.position.lon],17);else select(item.deviceId)};actions.append(locate)}
+          block.append(actions);
+          if(item.timeline&&item.timeline.length){const history=document.createElement('div');history.className='timeline';
+            const strong=document.createElement('strong');strong.textContent='Histórico';history.append(strong);
+            for(const entry of item.timeline){const line=document.createElement('p');
+              line.textContent=new Date(entry.at).toLocaleString('pt-BR')+' · '+entry.actor+': '+entry.text;history.append(line)}
+            block.append(history)}
           container.append(block);
         }
-      }catch{}
+      }catch(error){$('incidents').textContent='Falha ao atualizar ocorrências: '+error.message}
     }
     async function showDetail(id,focus){
       const response=await fetch('/api/monitor/sessions/'+id,{cache:'no-store'});
@@ -130,7 +295,15 @@
         data.position?'Coordenadas: '+data.position.lat.toFixed(7)+', '+data.position.lon.toFixed(7):'',
         data.position?'Precisão GPS estimada: ±'+Math.round(data.position.accuracy)+' m':'',
         'Posições na trilha: '+data.points.length,data.endReason?'Motivo do encerramento: '+data.endReason:''];
+      if(data.kind==='fleet'&&!data.profile)lines.push('Cadastro do responsável pendente neste aparelho.');
+      if(data.profile)lines.push('Responsável: '+data.profile.responsibleName,
+        'Missão/equipe: '+data.profile.mission,'Telefone: '+data.profile.phone,
+        'E-mail: '+data.profile.email,'Emergência: '+data.profile.emergencyName+
+        ' · '+data.profile.emergencyPhone);
       for(const line of lines.filter(Boolean)){const p=document.createElement('p');p.textContent=line;detail.append(p)}
+      if(data.profile){const reveal=document.createElement('button');reveal.textContent='Exibir CPF e nascimento';
+        reveal.onclick=()=>{reveal.textContent='CPF: '+data.profile.cpf+' · nascimento: '+data.profile.birthDate};
+        detail.append(reveal)}
       if(data.kind==='fleet'&&data.active){
         const revoke=document.createElement('button');revoke.textContent='Desvincular aparelho';
         revoke.onclick=async()=>{

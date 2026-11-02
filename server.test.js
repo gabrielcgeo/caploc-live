@@ -94,11 +94,25 @@ test('private live session, upload and public viewer',async()=>{
       code,name:'Equipe de teste'})});
     assert.equal(enrolled.status,201);
     const device=await enrolled.json();
+    const profile={responsibleName:'Maria Silva',mission:'Levantamento de campo',
+      phone:'31999990000',email:'maria@example.test',emergencyName:'João Silva',
+      emergencyPhone:'31999991111',birthDate:'1990-04-05',cpf:'52998224725'};
+    const invalidProfile=await fetch(base+'/api/fleet/enroll',{method:'POST',body:JSON.stringify({
+      code,name:'Cadastro inválido',profile:{...profile,cpf:'00000000000'}})});
+    assert.equal(invalidProfile.status,400,'invalid CPF rejected');
     const another=await fetch(base+'/api/fleet/enroll',{method:'POST',body:JSON.stringify({
-      code,name:'Outro aparelho'})});
+      code,name:'Outro aparelho',profile})});
     assert.equal(another.status,201,'QR enrollment code supports multiple devices');
     const secondDevice=await another.json();
     assert.notEqual(secondDevice.deviceToken,device.deviceToken,'each device gets a separate credential');
+    assert.equal(secondDevice.profileComplete,true);
+    const storedProfile=await fetch(base+'/api/fleet/'+secondDevice.id+'/profile',{
+      headers:{Authorization:'Bearer '+secondDevice.deviceToken}});
+    assert.equal((await storedProfile.json()).profile.cpf,profile.cpf);
+    const updatedProfile=await fetch(base+'/api/fleet/'+device.id+'/profile',{
+      method:'PUT',headers:{Authorization:'Bearer '+device.deviceToken},
+      body:JSON.stringify({name:'Equipe de teste',profile})});
+    assert.equal(updatedProfile.status,200,'older device can complete registration');
     const point=await fetch(base+'/api/fleet/'+device.id+'/position',{method:'PUT',
       headers:{Authorization:'Bearer '+device.deviceToken},body:JSON.stringify({lat:-19.9,lon:-43.9,accuracy:4})});
     assert.equal(point.status,200);
@@ -106,6 +120,7 @@ test('private live session, upload and public viewer',async()=>{
     const fleetItems=await fleet.json();
     assert.equal(fleetItems.length,2);
     assert.ok(fleetItems.some(item=>item.name==='Equipe de teste'));
+    assert.ok(fleetItems.every(item=>item.profileComplete));
     const incident=await fetch(base+'/api/fleet/'+device.id+'/incidents',{method:'POST',
       headers:{Authorization:'Bearer '+device.deviceToken},body:JSON.stringify({
         message:'Acidente de teste',mime:'image/png',media:Buffer.from('fake png').toString('base64'),
@@ -114,13 +129,51 @@ test('private live session, upload and public viewer',async()=>{
     const incidentId=(await incident.json()).id;
     const incidents=await fetch(base+'/api/monitor/incidents',{headers:authorized});
     assert.equal((await incidents.json())[0].message,'Acidente de teste');
+    assert.equal((await fetch(base+'/api/monitor/incidents')).status,401);
+    const own=await fetch(base+'/api/fleet/'+device.id+'/incidents',{
+      headers:{Authorization:'Bearer '+device.deviceToken}});
+    assert.equal((await own.json())[0].status,'new');
+    const patch=(action,values={})=>fetch(base+'/api/monitor/incidents/'+incidentId,{
+      method:'PATCH',headers:{...authorized,'Content-Type':'application/json'},
+      body:JSON.stringify({action,...values})});
+    assert.equal((await patch('acknowledge')).status,200);
+    assert.equal((await patch('start')).status,200);
+    assert.equal((await patch('priority',{priority:'critical'})).status,200);
+    assert.equal((await patch('assign',{text:'Equipe de plantão'})).status,200);
+    assert.equal((await patch('due',{dueAt:Date.now()+3600000})).status,200);
+    assert.equal((await patch('note',{text:'Nota interna de teste'})).status,200);
+    assert.equal((await patch('reply',{text:'Estamos a caminho'})).status,200);
+    const fieldMessage=await fetch(base+'/api/fleet/'+device.id+'/incidents/'+incidentId+'/messages',{
+      method:'POST',headers:{Authorization:'Bearer '+device.deviceToken},
+      body:JSON.stringify({message:'Equipe aguarda no local'})});
+    assert.equal(fieldMessage.status,200);
+    const otherMessage=await fetch(base+'/api/fleet/'+secondDevice.id+'/incidents/'+incidentId+'/messages',{
+      method:'POST',headers:{Authorization:'Bearer '+secondDevice.deviceToken},
+      body:JSON.stringify({message:'Não pertence a mim'})});
+    assert.equal(otherMessage.status,404,'another device cannot update incident');
+    const ownUpdated=await fetch(base+'/api/fleet/'+device.id+'/incidents',{
+      headers:{Authorization:'Bearer '+device.deviceToken}});
+    const ownRecord=(await ownUpdated.json())[0];
+    assert.equal(ownRecord.priority,'critical');
+    assert.ok(ownRecord.timeline.some(item=>item.text==='Estamos a caminho'));
+    assert.ok(!ownRecord.timeline.some(item=>item.text==='Nota interna de teste'));
+    assert.equal((await patch('resolve',{text:'Atendimento concluído com segurança'})).status,200);
+    assert.equal((await patch('reply',{text:'Mensagem tardia'})).status,409);
+    assert.equal((await patch('close')).status,200);
+    assert.equal((await patch('reopen')).status,200);
+    assert.equal((await patch('resolve',{text:'Encerramento definitivo'})).status,200);
+    assert.equal((await patch('close')).status,200);
     const media=await fetch(base+'/api/monitor/incidents/'+incidentId+'/media',{headers:authorized});
     assert.equal(await media.text(),'fake png');
     assert.equal((await fetch(base+'/api/monitor/incidents/'+incidentId+'/media')).status,401);
     const diskIncident=await disk(join(data,'incident-'+incidentId+'.json'),'utf8');
     assert.ok(!diskIncident.includes('Acidente de teste'),'incident encrypted at rest');
+    const diskDevice=await disk(join(data,'fleet-'+device.id+'.json'),'utf8');
+    assert.ok(!diskDevice.includes(profile.cpf),'personal registration encrypted at rest');
     const detail=await fetch(base+'/api/monitor/sessions/'+device.id,{headers:authorized});
-    assert.equal((await detail.json()).points.length,1);
+    const detailRecord=await detail.json();
+    assert.equal(detailRecord.points.length,1);
+    assert.equal(detailRecord.profile.cpf,profile.cpf);
     const revoke=await fetch(base+'/api/monitor/fleet/'+device.id,{method:'DELETE',headers:authorized});
     assert.equal(revoke.status,200);
     assert.equal((await fetch(base+'/api/fleet/'+device.id+'/position',{method:'PUT',
