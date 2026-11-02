@@ -49,18 +49,20 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const $=id=>document.getElementById(id);
-    let map,markers=L.featureGroup(),trail=L.polyline([],{color:'#ffcf34',weight:5}),selected=null,timer;
+    let map,markers,trail,selected=null,timer;
     const esc=s=>String(s??'');
     function initializeMap(){
       if(map)return;
+      if(!window.L){$('updated').textContent='Mapa indisponível; lista e ocorrências continuam acessíveis.';return}
       map=L.map('map').setView([-19.92,-43.94],5);
       L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
         {maxZoom:21,attribution:'Imagem de satélite © Google'}).addTo(map);
-      markers.addTo(map);trail.addTo(map);
+      markers=L.featureGroup().addTo(map);
+      trail=L.polyline([],{color:'#ffcf34',weight:5}).addTo(map);
     }
     function showWorkspace(){
       $('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;
-      initializeMap();setTimeout(()=>map.invalidateSize(),20);
+      initializeMap();if(map)setTimeout(()=>map.invalidateSize(),20);
       refresh();refreshIncidents();clearInterval(timer);timer=setInterval(()=>{refresh();refreshIncidents()},10000);
     }
     function age(at){return at?Math.max(0,Math.floor((Date.now()-at)/60000)):null}
@@ -78,22 +80,22 @@
         const records=await response.json();
         $('activeCount').textContent=records.filter(r=>r.active).length;
         $('updated').textContent='Atualizado às '+new Date().toLocaleTimeString('pt-BR')+' · atualização a cada 10 segundos';
-        $('list').replaceChildren();markers.clearLayers();
+        $('list').replaceChildren();if(markers)markers.clearLayers();
         for(const record of records){
           const [label,kind]=status(record);
           const item=document.createElement('button');item.className='item'+(selected===record.id?' selected':'');
           const name=document.createElement('strong');name.textContent=(record.kind==='fleet'?'📱 ':'🔗 ')+esc(record.name);item.append(name);
           const state=document.createElement('small');state.textContent=label+' · '+record.pointCount+' posições';item.append(state);
           item.onclick=()=>select(record.id);$('list').append(item);
-          if(record.position){
+          if(record.position&&markers){
             const marker=L.circleMarker([record.position.lat,record.position.lon],{
               radius:selected===record.id?11:8,color:'#fff',weight:2,fillColor:kind==='ended'?'#64748b':kind==='stale'?'#f59e0b':'#e3343b',fillOpacity:1});
             marker.bindTooltip(esc(record.name)+' · '+label);marker.on('click',()=>select(record.id));markers.addLayer(marker);
           }
         }
-        if(selected&&!records.some(r=>r.id===selected)){selected=null;trail.setLatLngs([]);$('detail').textContent='Sessão expirada ou indisponível.'}
+        if(selected&&!records.some(r=>r.id===selected)){selected=null;if(trail)trail.setLatLngs([]);$('detail').textContent='Sessão expirada ou indisponível.'}
         if(selected)await showDetail(selected,false);
-        else if(records.some(r=>r.position)){const bounds=markers.getBounds();if(bounds.isValid())map.fitBounds(bounds.pad(.2),{maxZoom:15})}
+        else if(markers&&records.some(r=>r.position)){const bounds=markers.getBounds();if(bounds.isValid())map.fitBounds(bounds.pad(.2),{maxZoom:15})}
       }catch(error){$('updated').textContent=error.message}
     }
     async function select(id){selected=id;await showDetail(id,true);refresh()}
@@ -119,7 +121,7 @@
       const response=await fetch('/api/monitor/sessions/'+id,{cache:'no-store'});
       if(!response.ok)return;
       const data=await response.json();if(selected!==id)return;
-      trail.setLatLngs(data.points.map(p=>[p.lat,p.lon]));
+      if(trail)trail.setLatLngs(data.points.map(p=>[p.lat,p.lon]));
       const detail=$('detail');detail.replaceChildren();
       const title=document.createElement('strong');title.textContent=data.name;detail.append(title);
       const lines=[status(data)[0],data.position?'Última posição: '+new Date(data.position.at).toLocaleString('pt-BR'):'Sem posição recebida',
@@ -135,7 +137,7 @@
           if(response.ok)refresh();else alert('Não foi possível desvincular o aparelho.');
         };detail.append(revoke);
       }
-      if(focus&&data.position)map.setView([data.position.lat,data.position.lon],16);
+      if(focus&&data.position&&map)map.setView([data.position.lat,data.position.lon],16);
     }
     $('form').onsubmit=async event=>{
       event.preventDefault();$('error').textContent='';
