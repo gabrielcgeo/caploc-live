@@ -77,6 +77,14 @@ test('private live session, upload and public viewer',async()=>{
       email:'admin@example.test',password:monitorPassword})});
     assert.equal(login.status,200);
     const cookie=login.headers.get('set-cookie').split(';')[0],authorized={Cookie:cookie};
+    assert.equal((await fetch(base+'/api/monitor/rtcm-credentials')).status,401);
+    const rtcmAccess=await fetch(base+'/api/monitor/rtcm-credentials',{headers:authorized});
+    assert.equal(rtcmAccess.status,200);
+    const rtcmCredentials=await rtcmAccess.json();
+    assert.notEqual(rtcmCredentials.sourceToken,rtcmCredentials.roverToken);
+    assert.ok(rtcmCredentials.sourceToken.length>=32&&rtcmCredentials.roverToken.length>=32);
+    assert.equal((await fetch(base+'/api/rtcm/CAPLOC',{headers:{Authorization:'Bearer '+rtcmCredentials.sourceToken}})).status,401);
+    assert.equal((await fetch(base+'/api/rtcm/CAPLOC',{headers:{Authorization:'Bearer '+rtcmCredentials.roverToken}})).status,503);
     const initial=await fetch(base+'/api/monitor/sessions',{headers:authorized});
     assert.equal(initial.status,200);
     assert.equal((await initial.json()).length,0,'anonymous sessions do not enter central');

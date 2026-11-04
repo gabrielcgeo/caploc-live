@@ -1,13 +1,16 @@
 import {createServer} from 'node:http';
-import {randomBytes, createHash, createCipheriv, createDecipheriv, timingSafeEqual, scryptSync} from 'node:crypto';
+import {randomBytes, createHash, createHmac, createCipheriv, createDecipheriv, timingSafeEqual, scryptSync} from 'node:crypto';
 import {readFile, writeFile, rename, mkdir, unlink, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import QRCode from 'qrcode';
+import {createRtcmRelay} from './rtcm-relay.js';
 
 const port=Number(process.env.PORT||8080);
 const dataDir=process.env.DATA_DIR||'/data';
 const publicBase=(process.env.PUBLIC_BASE_URL||'').replace(/\/$/,'');
 const adminToken=process.env.EXPLORER_ADMIN_TOKEN||'';
+const rtcmKey=role=>createHmac('sha256',adminToken).update('caploc-rtcm-'+role+'-v1').digest('base64url');
+const rtcmRelay=createRtcmRelay(rtcmKey('source'),rtcmKey('rover'));
 const monitorEmail=(process.env.MONITOR_ADMIN_EMAIL||'').trim().toLowerCase();
 const monitorPasswordHash=process.env.MONITOR_ADMIN_PASSWORD_SCRYPT||'';
 if(!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(publicBase)||adminToken.length<32) {
@@ -299,9 +302,15 @@ function viewer(id) { return viewerTemplate.replaceAll('__SESSION_ID__',id); }
 const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
+    if(rtcmRelay.handle(request,response,url.pathname)) return;
     if(request.method==='GET'&&url.pathname==='/health') return send(response,200,{ok:true});
     if(request.method==='GET'&&url.pathname==='/central')
       return send(response,200,monitorTemplate,'text/html; charset=utf-8');
+    if(request.method==='GET'&&url.pathname==='/api/monitor/rtcm-credentials') {
+      if(!monitorAuthenticated(request))return send(response,401,{error:'unauthorized'});
+      return send(response,200,{sourceToken:rtcmKey('source'),roverToken:rtcmKey('rover'),
+        streamUrl:publicBase+'/api/rtcm/CAPLOC'});
+    }
     if(request.method==='POST'&&url.pathname==='/api/monitor/login') {
       if(!loginAllowed(request)) return send(response,429,{error:'too_many_attempts'});
       const input=await body(request);
@@ -576,4 +585,5 @@ const server=createServer(async(request,response)=>{
     send(response,code,{error:code===500?'server_error':'invalid_request'});
   }
 });
+server.requestTimeout=0; // RTCM base uploads intentionally remain open for the field session.
 server.listen(port,'0.0.0.0',()=>console.log(`CapLoc Explorer Live listening on ${port}`));

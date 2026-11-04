@@ -22,6 +22,7 @@
     #detail{margin-top:16px;padding-top:12px;border-top:1px solid #d2deea;line-height:1.6;overflow-wrap:anywhere}
     #error{color:#a82732;min-height:1.4em}.muted{color:#5c7188}#logout{background:#315576}
     #qrBox{margin:12px 0;padding:12px;background:#f0f5fa;border-radius:12px;text-align:center}#qrImage{display:block;width:min(100%,260px);height:auto;margin:4px auto;border-radius:8px}#qrBox small{display:block;overflow-wrap:anywhere}
+    #rtcmBox{margin:12px 0;padding:12px;background:#eef5fc;border-radius:12px}#rtcmBox input{font-size:12px;margin:4px 0 8px}#rtcmBox button{font-size:12px;margin-bottom:10px}
     header .headerActions{display:flex;gap:8px;align-items:center}#enableAlerts{background:#b91c1c}
     .queueTitle{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:20px}
     .queueTitle h2{margin:0}.queueTitle strong{background:#b91c1c;color:white;border-radius:20px;padding:4px 10px}
@@ -61,6 +62,13 @@
       <button id="newCode">Vincular aparelho da empresa</button>
       <p id="codeBox" class="muted" aria-live="polite"></p>
       <div id="qrBox" hidden><img id="qrImage" alt="QR code temporário para vincular aparelhos ao CapLoc"><small>Abra Explorer → Compartilhar → Ler QR da central em cada CapLoc. O mesmo QR vincula vários aparelhos durante 2 horas; cada um recebe sua identificação e chave próprias.</small></div>
+      <button id="rtcmAccess" type="button">Acesso RTK · base e rover</button>
+      <div id="rtcmBox" hidden><p><strong>Correções da base pelo CapLoc</strong></p>
+        <p class="muted">Use chaves separadas nos dois telefones. Guarde-as em privado.</p>
+        <label for="rtcmSourceToken">Chave do telefone da base</label><input id="rtcmSourceToken" readonly><button id="copyRtcmSource" type="button">Copiar chave da base</button>
+        <label for="rtcmRoverToken">Senha NTRIPS do rover</label><input id="rtcmRoverToken" readonly><button id="copyRtcmRover" type="button">Copiar senha do rover</button>
+        <small id="rtcmUrl" class="muted"></small>
+      </div>
       <div id="list" aria-label="Clientes compartilhando localização"></div>
       <div id="detail"><span class="muted">Selecione uma pessoa ou projeto para ver a posição e a trilha.</span></div>
       <div class="queueTitle"><h2>Ocorrências</h2><strong id="openCount">0 abertas</strong></div>
@@ -332,6 +340,17 @@
       $('codeBox').textContent='Código de cadastro: '+data.code+' · válido até '+new Date(data.expiresAt).toLocaleString('pt-BR')+' para vários aparelhos. Você também pode digitá-lo no CapLoc.';
       $('qrImage').src=data.qr;$('qrBox').hidden=false;
     };
+    $('rtcmAccess').onclick=async()=>{
+      const response=await fetch('/api/monitor/rtcm-credentials');
+      if(!response.ok){alert('Não foi possível obter o acesso RTCM. Entre novamente na Central.');return}
+      const credentials=await response.json();
+      $('rtcmSourceToken').value=credentials.sourceToken;
+      $('rtcmRoverToken').value=credentials.roverToken;
+      $('rtcmUrl').textContent=credentials.streamUrl;
+      $('rtcmBox').hidden=false;
+    };
+    $('copyRtcmSource').onclick=()=>navigator.clipboard.writeText($('rtcmSourceToken').value);
+    $('copyRtcmRover').onclick=()=>navigator.clipboard.writeText($('rtcmRoverToken').value);
     fetch('/api/monitor/sessions').then(r=>{if(r.ok)showWorkspace()}).catch(()=>{});
   </script>
 </body>
