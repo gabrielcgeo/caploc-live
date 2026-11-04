@@ -303,6 +303,8 @@ const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
     if(rtcmRelay.handle(request,response,url.pathname)) return;
+    if(request.method==='GET'&&url.pathname==='/')
+      return send(response,302,'','text/plain; charset=utf-8',{Location:'/central'});
     if(request.method==='GET'&&url.pathname==='/health') return send(response,200,{ok:true});
     if(request.method==='GET'&&url.pathname==='/central')
       return send(response,200,monitorTemplate,'text/html; charset=utf-8');
