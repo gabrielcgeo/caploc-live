@@ -4,7 +4,7 @@ import {timingSafeEqual,createHash} from 'node:crypto';
 export function createRtcmRelay(sourceSecret,roverSecret) {
   const sourceExpected=createHash('sha256').update(sourceSecret||'').digest();
   const roverExpected=createHash('sha256').update(roverSecret||'').digest();
-  let source=null,clients=new Set(),lastFrameAt=0,frames=0,bytes=0;
+  let source=null,sourceSession='',clients=new Set(),lastFrameAt=0,frames=0,bytes=0;
   const authorized=(request,role)=>{
     const header=request.headers.authorization||'';
     let supplied='';
@@ -21,20 +21,26 @@ export function createRtcmRelay(sourceSecret,roverSecret) {
   const closeClients=()=>{for(const client of clients)client.end();clients.clear();};
   function status() {return {sourceConnected:!!source,rovers:clients.size,lastFrameAt,frames,bytes};}
   function handle(request,response,path) {
-    if(!['/api/rtcm/CAPLOC','/api/rtcm/CAPLOC/status'].includes(path))return false;
-    const role=request.method==='POST'?'source':'rover';
+    if(!['/api/rtcm/CAPLOC','/api/rtcm/CAPLOC/status',
+      '/api/rtcm/CAPLOC/source-status'].includes(path))return false;
+    const role=request.method==='POST'||path.endsWith('/source-status')?'source':'rover';
     if(!authorized(request,role)) {
       response.writeHead(401,{'WWW-Authenticate':'Basic realm="CapLoc RTCM"','Cache-Control':'no-store'});
       response.end();return true;
     }
-    if(path.endsWith('/status')) {
+    if(path.endsWith('/status')||path.endsWith('/source-status')) {
       if(request.method!=='GET') {response.writeHead(405);response.end();return true;}
+      if(path.endsWith('/source-status')&&(!source||!sourceSession||
+          request.headers['x-caploc-source-session']!==sourceSession)) {
+        response.writeHead(409,{'Cache-Control':'no-store'});response.end();return true;
+      }
       response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
       response.end(JSON.stringify(status()));return true;
     }
     if(request.method==='POST') {
       if(source) {response.writeHead(409);response.end('base already connected');return true;}
-      source=request;frames=0;bytes=0;lastFrameAt=0;
+      source=request;sourceSession=String(request.headers['x-caploc-source-session']||'');
+      frames=0;bytes=0;lastFrameAt=0;
       request.setTimeout(30000,()=>request.destroy());
       response.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});
       response.flushHeaders();
@@ -57,7 +63,7 @@ export function createRtcmRelay(sourceSecret,roverSecret) {
         }
         if(buffer.length>2048)buffer=buffer.subarray(-2048);
       });
-      const finish=()=>{if(source===request){source=null;closeClients();}response.end();};
+      const finish=()=>{if(source===request){source=null;sourceSession='';closeClients();}response.end();};
       request.once('end',finish);request.once('close',finish);
       return true;
     }

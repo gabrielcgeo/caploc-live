@@ -21,14 +21,18 @@ test('authenticated live RTCM relay validates CRC and streams to rover',async()=
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port,base=`http://127.0.0.1:${port}`;
   const auth={'Authorization':'Bearer '+token};
+  const sourceSession='test-session-for-source-check';
+  const sourceAuth={...auth,'X-CapLoc-Source-Session':sourceSession};
   const roverAuth={'Authorization':'Bearer '+roverToken};
   let source;
   try {
     assert.equal((await fetch(base+'/api/rtcm/CAPLOC')).status,401);
     assert.equal((await fetch(base+'/api/rtcm/CAPLOC',{headers:auth})).status,401);
     assert.equal((await fetch(base+'/api/rtcm/CAPLOC',{headers:roverAuth})).status,503);
+    assert.equal((await fetch(base+'/api/rtcm/CAPLOC/source-status',{headers:roverAuth})).status,401);
+    assert.equal((await fetch(base+'/api/rtcm/CAPLOC/source-status',{headers:sourceAuth})).status,409);
     source=httpRequest({host:'127.0.0.1',port,path:'/api/rtcm/CAPLOC',method:'POST',
-      headers:{...auth,'Content-Type':'application/octet-stream'}});
+      headers:{...sourceAuth,'Content-Type':'application/octet-stream'}});
     source.flushHeaders();
     await new Promise(resolve=>setTimeout(resolve,30));
     const valid=frame([0x43,0x50,0x01]);
@@ -41,6 +45,11 @@ test('authenticated live RTCM relay validates CRC and streams to rover',async()=
       await new Promise(resolve=>setTimeout(resolve,10));
     }
     assert.equal(state.frames,1);assert.equal(state.bytes,valid.length);
+    assert.equal((await fetch(base+'/api/rtcm/CAPLOC/source-status',{headers:auth})).status,409);
+    const sourceState=await (await fetch(base+'/api/rtcm/CAPLOC/source-status',{headers:sourceAuth})).json();
+    assert.equal(sourceState.sourceConnected,true);
+    assert.equal(sourceState.frames,1);
+    assert.equal(sourceState.bytes,valid.length);
     const competing=await fetch(base+'/api/rtcm/CAPLOC',{method:'POST',headers:auth,body:valid});
     assert.equal(competing.status,409);
     const rover=await fetch(base+'/api/rtcm/CAPLOC',{
