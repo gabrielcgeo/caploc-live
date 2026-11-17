@@ -1,4 +1,4 @@
-import {createServer} from 'node:http';
+import {createServer, request as httpRequest} from 'node:http';
 import {randomBytes, createHash, createHmac, createCipheriv, createDecipheriv, timingSafeEqual, scryptSync} from 'node:crypto';
 import {readFile, writeFile, rename, mkdir, unlink, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -8,6 +8,7 @@ import {createRtcmRelay} from './rtcm-relay.js';
 const port=Number(process.env.PORT||8080);
 const dataDir=process.env.DATA_DIR||'/data';
 const publicBase=(process.env.PUBLIC_BASE_URL||'').replace(/\/$/,'');
+const arWorkerOrigin=process.env.AR_WORKER_ORIGIN||'';
 const adminToken=process.env.EXPLORER_ADMIN_TOKEN||'';
 const rtcmKey=role=>createHmac('sha256',adminToken).update('caploc-rtcm-'+role+'-v1').digest('base64url');
 const rtcmRelay=createRtcmRelay(rtcmKey('source'),rtcmKey('rover'));
@@ -302,6 +303,19 @@ function viewer(id) { return viewerTemplate.replaceAll('__SESSION_ID__',id); }
 const server=createServer(async(request,response)=>{
   try {
     const url=new URL(request.url,'http://localhost');
+    if(url.pathname.startsWith('/api/ar/')) {
+      if(!arWorkerOrigin)return send(response,503,{error:'ar_worker_unavailable'});
+      if(!['GET','POST'].includes(request.method))return send(response,405,{error:'method_not_allowed'});
+      const target=new URL(url.pathname.slice('/api/ar'.length)+url.search,arWorkerOrigin);
+      const headers={...request.headers,host:target.host};
+      const upstream=httpRequest(target,{method:request.method,headers,timeout:15*60*1000},reply=>{
+        response.writeHead(reply.statusCode||502,reply.headers);reply.pipe(response);
+      });
+      upstream.on('error',()=>{if(!response.headersSent)send(response,502,{error:'ar_worker_unavailable'});
+        else response.destroy();});
+      request.pipe(upstream);
+      return;
+    }
     if(rtcmRelay.handle(request,response,url.pathname)) return;
     if(request.method==='GET'&&url.pathname==='/')
       return send(response,302,'','text/plain; charset=utf-8',{Location:'/central'});
@@ -312,6 +326,11 @@ const server=createServer(async(request,response)=>{
       if(!monitorAuthenticated(request))return send(response,401,{error:'unauthorized'});
       return send(response,200,{sourceToken:rtcmKey('source'),roverToken:rtcmKey('rover'),
         streamUrl:publicBase+'/api/rtcm/CAPLOC'});
+    }
+    if(request.method==='GET'&&url.pathname==='/api/monitor/ar-credentials') {
+      if(!monitorAuthenticated(request))return send(response,401,{error:'unauthorized'});
+      return send(response,200,{url:publicBase+'/api/ar',token:createHmac('sha256',adminToken)
+        .update('caploc-ar-worker-v1').digest('base64url')});
     }
     if(request.method==='POST'&&url.pathname==='/api/monitor/login') {
       if(!loginAllowed(request)) return send(response,429,{error:'too_many_attempts'});

@@ -69,6 +69,11 @@
         <label for="rtcmRoverToken">Senha NTRIPS do rover</label><input id="rtcmRoverToken" readonly><button id="copyRtcmRover" type="button">Copiar senha do rover</button>
         <small id="rtcmUrl" class="muted"></small>
       </div>
+      <button id="arAccess" type="button">Processamento 3D · acesso do CapLoc</button>
+      <div id="arBox" hidden><p class="muted">Configure uma vez em AR → Processador Gaussian. A chave é privada dos aparelhos autorizados.</p>
+        <label for="arUrl">URL HTTPS</label><input id="arUrl" readonly><button id="copyArUrl" type="button">Copiar URL</button>
+        <label for="arToken">Chave de processamento</label><input id="arToken" readonly><button id="copyArToken" type="button">Copiar chave</button>
+      </div>
       <div id="list" aria-label="Clientes compartilhando localização"></div>
       <div id="detail"><span class="muted">Selecione uma pessoa ou projeto para ver a posição e a trilha.</span></div>
       <div class="queueTitle"><h2>Ocorrências</h2><strong id="openCount">0 abertas</strong></div>
@@ -351,6 +356,13 @@
     };
     $('copyRtcmSource').onclick=()=>navigator.clipboard.writeText($('rtcmSourceToken').value);
     $('copyRtcmRover').onclick=()=>navigator.clipboard.writeText($('rtcmRoverToken').value);
+    $('arAccess').onclick=async()=>{
+      const response=await fetch('/api/monitor/ar-credentials');
+      if(!response.ok){alert('Não foi possível obter o acesso 3D. Entre novamente na Central.');return}
+      const access=await response.json();$('arUrl').value=access.url;$('arToken').value=access.token;$('arBox').hidden=false;
+    };
+    $('copyArUrl').onclick=()=>navigator.clipboard.writeText($('arUrl').value);
+    $('copyArToken').onclick=()=>navigator.clipboard.writeText($('arToken').value);
     fetch('/api/monitor/sessions').then(r=>{if(r.ok)showWorkspace()}).catch(()=>{});
   </script>
 </body>
