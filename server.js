@@ -82,6 +82,20 @@ function bearer(request) { const value=request.headers.authorization||''; return
 const token=()=>randomBytes(32).toString('base64url');
 const monitorSessions=new Map(),monitorAttempts=new Map();
 const monitorCookie='caploc_monitor';
+const monitorSessionLifetime=30*24*60*60*1000;
+function monitorSessionPath(hash) {
+  if(!/^[a-f0-9]{64}$/.test(hash))throw new Error('invalid_monitor_session');
+  return join(dataDir,'monitor-session-'+hash+'.json');
+}
+for(const name of await readdir(dataDir)) {
+  const found=/^monitor-session-([a-f0-9]{64})\.json$/.exec(name);
+  if(!found)continue;
+  try {
+    const item=unseal(await readFile(monitorSessionPath(found[1]),'utf8'));
+    if(item.expiresAt>Date.now())monitorSessions.set(found[1],item.expiresAt);
+    else await unlink(monitorSessionPath(found[1]));
+  } catch(error) {console.error('Monitor session unavailable',error.code||error.message);}
+}
 function enrollmentPath(code) {
   if(!/^[A-Za-z0-9_-]{24}$/.test(code))return null;
   return join(dataDir,'enroll-'+tokenHash(code).toString('hex')+'.json');
@@ -100,7 +114,7 @@ async function enrollmentExpiry(code) {
 function monitorAuthenticated(request) {
   const cookie=(request.headers.cookie||'').split(';').map(v=>v.trim())
     .find(v=>v.startsWith(monitorCookie+'='));
-  const session=cookie&&monitorSessions.get(cookie.slice(monitorCookie.length+1));
+  const session=cookie&&monitorSessions.get(tokenHash(cookie.slice(monitorCookie.length+1)).toString('hex'));
   if(!session||session<Date.now()) return false;
   return true;
 }
@@ -338,14 +352,21 @@ const server=createServer(async(request,response)=>{
       if(!monitorEmail||!validMonitorPassword(String(input.password||''))||
           String(input.email||'').trim().toLowerCase()!==monitorEmail)
         return send(response,401,{error:'invalid_credentials'});
-      const session=token();monitorSessions.set(session,Date.now()+8*3600000);
+      const session=token(),hash=tokenHash(session).toString('hex');
+      const expiresAt=Date.now()+monitorSessionLifetime;
+      await writeFile(monitorSessionPath(hash),seal({expiresAt}),{mode:0o600});
+      monitorSessions.set(hash,expiresAt);
       return send(response,200,{ok:true},'application/json; charset=utf-8',
-        {'Set-Cookie':`${monitorCookie}=${session}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=28800`});
+        {'Set-Cookie':`${monitorCookie}=${session}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`});
     }
     if(request.method==='POST'&&url.pathname==='/api/monitor/logout') {
       const cookie=(request.headers.cookie||'').split(';').map(v=>v.trim())
         .find(v=>v.startsWith(monitorCookie+'='));
-      if(cookie) monitorSessions.delete(cookie.slice(monitorCookie.length+1));
+      if(cookie) {
+        const hash=tokenHash(cookie.slice(monitorCookie.length+1)).toString('hex');
+        monitorSessions.delete(hash);
+        await unlink(monitorSessionPath(hash)).catch(error=>{if(error.code!=='ENOENT')throw error;});
+      }
       return send(response,200,{ok:true},'application/json; charset=utf-8',
         {'Set-Cookie':`${monitorCookie}=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0`});
     }
